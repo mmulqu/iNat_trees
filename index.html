@@ -642,6 +642,22 @@
           // Make sure the results card shows (addTree already activates latest tab)
           const card = document.getElementById('resultsCard');
           if (card) card.style.display = 'block';
+
+          // Force cleanup: ensure only the last tree's tab is active
+          const mgr = window.treeManager;
+          if (mgr && mgr.trees.length > 0) {
+            // Deactivate all tab panes first
+            mgr.tabContentContainer?.querySelectorAll('.tab-pane').forEach(p => {
+              p.classList.remove('show', 'active');
+            });
+            mgr.tabsContainer?.querySelectorAll('.nav-link').forEach(t => {
+              t.classList.remove('active');
+              t.setAttribute('aria-selected', 'false');
+            });
+            // Activate only the last (most recent) tree
+            const lastTree = mgr.trees[mgr.trees.length - 1];
+            mgr.activateTab(lastTree.id);
+          }
         }
       } catch (e) {
         console.warn('restoreCachedTrees failed', e);
