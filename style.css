@@ -348,3 +348,502 @@ html {
 .dark-theme .markmap-foreign {
   color: inherit;
 }
+
+/* ============================================
+   MAIN APP STYLES (extracted from index.html)
+   ============================================ */
+
+/* CSS Variables */
+:root {
+  --primary-color: #3fac8c;
+  --secondary-color: #2d7d64;
+  --background-color: #f8faf9;
+  --text-color: #333;
+  --border-color: #dee2e6;
+}
+
+body {
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  line-height: 1.6;
+  color: var(--text-color);
+  background-color: var(--background-color);
+  padding-bottom: 2rem;
+}
+
+/* Dark theme overrides via CSS variables */
+body.dark-theme {
+  --primary-color: #3fac8c;
+  --secondary-color: #2a6e58;
+  --background-color: #151718;
+  --text-color: #e6e6e6;
+  --border-color: #2a2d2f;
+}
+
+/* Component overrides in dark theme */
+body.dark-theme .card {
+  background-color: #1d1f20;
+  border-color: var(--border-color);
+  color: var(--text-color);
+}
+body.dark-theme .card-header {
+  background-color: var(--secondary-color);
+  color: #f2f2f2;
+}
+body.dark-theme .accordion-button {
+  background-color: #1d1f20;
+  color: var(--text-color);
+  border-color: var(--border-color);
+}
+body.dark-theme .accordion-body {
+  background-color: #1b1d1e;
+  color: var(--text-color);
+}
+body.dark-theme pre,
+body.dark-theme .bg-light,
+body.dark-theme .tree-info,
+body.dark-theme .helpful-tips {
+  background-color: #202324 !important;
+  color: var(--text-color) !important;
+  border-color: var(--border-color) !important;
+}
+body.dark-theme input,
+body.dark-theme select,
+body.dark-theme .form-control,
+body.dark-theme .dropdown-menu {
+  background-color: #1d1f20;
+  color: var(--text-color);
+  border-color: var(--border-color);
+}
+body.dark-theme .dropdown-item { color: var(--text-color); }
+body.dark-theme .dropdown-item.selected { background-color: #26312e; }
+
+/* Markmap dark styling */
+body.dark-theme .markmap-container svg { background-color: #1d1f20; }
+/* Force bright labels for both text and html label modes */
+body.dark-theme .markmap-container svg text,
+body.dark-theme .markmap-container svg tspan,
+body.dark-theme .markmap-container svg .markmap-node text { fill: #f8fafc !important; opacity: 0.96 !important; }
+body.dark-theme .markmap-container .markmap-foreign *:not(.user1-node):not(.user2-node):not(.shared-node) { color: #f8fafc !important; }
+
+/* Explicit light-mode markmap text so it never ends up white on white */
+body:not(.dark-theme) .markmap-container svg text,
+body:not(.dark-theme) .markmap-container svg tspan,
+body:not(.dark-theme) .markmap-container svg .markmap-node text { fill: #111827 !important; opacity: 1 !important; }
+body:not(.dark-theme) .markmap-container .markmap-foreign *:not(.user1-node):not(.user2-node):not(.shared-node) { color: #111827 !important; }
+
+/* Default link strokes */
+.markmap-container svg path { stroke: #9aa1a7; }
+body.dark-theme .markmap-container svg path { stroke: #6f918a; }
+
+/* PVP edges (win in both themes) */
+.markmap-container svg path.user1-edge { stroke: #ff6b6b !important; }
+.markmap-container svg path.user2-edge { stroke: #4dabf7 !important; }
+.markmap-container svg path.shared-edge { stroke: #cc5de8 !important; }
+
+/* PVP label colors (apply to spans, anchors, and any descendants) */
+.user1-node, .user1-node a, .user1-node * { color: #ff6b6b !important; }
+.user2-node, .user2-node a, .user2-node * { color: #4dabf7 !important; }
+.shared-node, .shared-node a, .shared-node * { color: #cc5de8 !important; }
+
+.navbar {
+  background-color: var(--primary-color);
+}
+
+/* Always show iNaturalist favicon on the auth button via CSS */
+.inat-favicon {
+  background-image: url('https://www.inaturalist.org/favicon.ico');
+  background-repeat: no-repeat;
+  background-position: 12px center;
+  padding-left: 34px;
+  background-size: 18px 18px;
+}
+
+.navbar-brand {
+  font-weight: bold;
+  color: white !important;
+}
+
+.container {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 1rem;
+}
+
+.card {
+  border-radius: 10px;
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+  margin-bottom: 2rem;
+  border: 1px solid var(--border-color);
+}
+
+.card-header {
+  background-color: var(--primary-color);
+  color: white;
+  border-radius: 10px 10px 0 0 !important;
+  font-weight: bold;
+}
+
+input, select {
+  border-radius: 5px;
+  border: 1px solid var(--border-color);
+  padding: 8px 12px;
+  width: 100%;
+  margin-bottom: 1rem;
+}
+
+button {
+  background-color: var(--primary-color);
+  color: white;
+  border: none;
+  border-radius: 5px;
+  padding: 10px 20px;
+  cursor: pointer;
+  transition: background-color 0.3s;
+  font-weight: bold;
+}
+
+button:hover {
+  background-color: var(--secondary-color);
+}
+
+#markdownResult {
+  background-color: #f5f5f5;
+  border-radius: 5px;
+  padding: 1rem;
+  font-family: monospace;
+  max-height: 300px;
+  overflow: auto;
+}
+
+#markmap {
+  width: 100%;
+  height: 700px;
+  border: 1px solid var(--border-color);
+  border-radius: 5px;
+}
+
+/* Loading spinner */
+.spinner-container {
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  margin: 2rem 0;
+}
+
+.spinner {
+  border: 4px solid rgba(0, 0, 0, 0.1);
+  border-left-color: var(--primary-color);
+  border-radius: 50%;
+  width: 40px;
+  height: 40px;
+  animation: spin 1s linear infinite;
+  margin-bottom: 1rem;
+}
+
+.spinner-text {
+  text-align: center;
+  font-style: italic;
+  color: var(--secondary-color);
+}
+
+/* Loading progress indicator */
+.spinner-progress {
+  font-size: 0.85rem;
+  color: var(--text-color);
+  opacity: 0.8;
+  margin-top: 0.5rem;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.info-text {
+  font-size: 0.9rem;
+  margin-top: 0.5rem;
+  color: #6c757d;
+}
+
+.helpful-tips {
+  background-color: #e9f7f2;
+  border-left: 4px solid var(--primary-color);
+  padding: 1rem;
+  margin: 1rem 0;
+  border-radius: 0 5px 5px 0;
+}
+
+/* Custom toggle switch */
+.toggle-container {
+  margin-bottom: 20px;
+}
+
+.search-option {
+  margin-bottom: 15px;
+  display: none;
+}
+
+.search-option.active {
+  display: block;
+}
+
+/* Autocomplete styles */
+.autocomplete-container {
+  position: relative;
+}
+
+.autocomplete-results {
+  position: absolute;
+  z-index: 1000;
+  background-color: white;
+  width: 100%;
+  max-height: 200px;
+  overflow-y: auto;
+  border: 1px solid var(--border-color);
+  border-radius: 0 0 5px 5px;
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+  display: none;
+}
+
+.autocomplete-item {
+  padding: 8px 12px;
+  cursor: pointer;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.autocomplete-item:hover {
+  background-color: #f5f5f5;
+}
+
+.autocomplete-item:last-child {
+  border-bottom: none;
+}
+
+.autocomplete-item .scientific-name {
+  font-style: italic;
+  color: #666;
+  font-size: 0.9em;
+}
+
+.autocomplete-item .taxon-id {
+  color: #999;
+  font-size: 0.8em;
+  float: right;
+}
+
+.scientific-name {
+  font-style: italic;
+  color: #666;
+}
+
+.taxon-id {
+  color: #999;
+  font-size: 0.9em;
+}
+
+/* Dark mode for autocomplete */
+body.dark-theme .autocomplete-results {
+  background-color: #1d1f20;
+  color: var(--text-color);
+  border-color: var(--border-color);
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.6);
+}
+body.dark-theme .autocomplete-item { border-bottom: 1px solid #2a2d2f; }
+body.dark-theme .autocomplete-item:hover { background-color: #222628; }
+body.dark-theme .autocomplete-item .scientific-name { color: #cfcfcf; }
+body.dark-theme .autocomplete-item .taxon-id { color: #a0a0a0; }
+body.dark-theme .scientific-name { color: #aaa; }
+body.dark-theme .taxon-id { color: #777; }
+
+/* Brighter small labels for dark mode */
+body.dark-theme small, body.dark-theme .text-muted { color: #d0d6d8 !important; }
+
+/* Dropdown menu for autocomplete results */
+.dropdown-menu {
+  width: 100%;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.dropdown-item.selected {
+  background-color: #e9f7f2;
+}
+
+/* Visual indicator when a taxon is selected */
+.is-valid {
+  border-color: var(--primary-color) !important;
+  background-color: rgba(63, 172, 140, 0.1) !important;
+}
+
+/* Fix for markmap rendering */
+.markmap-container {
+  min-height: 700px;
+  width: 100%;
+  display: block;
+}
+
+.tab-pane {
+  transition: opacity 0.3s ease-in-out;
+  position: relative;
+}
+
+#resultsCard {
+  position: relative;
+  z-index: 100;
+  margin-left: calc(50% - 50vw);
+  width: 100vw;
+  border-radius: 0;
+}
+
+/* When in Fullscreen, let the canvas own the screen */
+:fullscreen .markmap-container { height: 100dvh; }
+
+/* Place toolbars over the canvas */
+.mm-toolbar {
+  position: absolute;
+  top: .5rem;
+  right: .5rem;
+  z-index: 5;
+  display: flex;
+  gap: .5rem;
+  align-items: center;
+}
+.mm-toolbar .form-select, .mm-toolbar .btn { padding: .25rem .5rem; }
+
+/* Only show Explore's global results on Explore */
+body:not(.in-home) #resultsCard { display: none !important; }
+
+/* Existing rules stay */
+body.in-pvp #resultsCard { display: none !important; }
+body:not(.in-pvp) #pvpResultsCard { display: none !important; }
+
+/* Lifelist switch with inline text */
+.lifelist-switch .form-check-input.lifelist-toggle {
+  width: 12em;
+  height: 2.25rem;
+  cursor: pointer;
+  position: relative;
+  background-color: #d1e7dd;
+  border-color: var(--border-color);
+}
+body.dark-theme .lifelist-switch .form-check-input.lifelist-toggle {
+  background-color: #22423a;
+  border-color: #35504a;
+}
+
+.lifelist-switch .form-check-input.lifelist-toggle::after {
+  content: attr(data-off);
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font-weight: 700;
+  color: #0f5132;
+}
+body.dark-theme .lifelist-switch .form-check-input.lifelist-toggle::after {
+  color: #c4f1dd;
+}
+
+/* When checked, show Global */
+.lifelist-switch .form-check-input.lifelist-toggle:checked::after {
+  content: attr(data-on);
+  color: white;
+}
+
+/* Make the knob subtle so text stays readable */
+.lifelist-switch .form-check-input.lifelist-toggle:focus { box-shadow: none; }
+
+/* Map title (top-left) — smaller, two-line, narrower */
+.leaflet-control.map-title {
+  background: rgba(17,24,39,.92);
+  color: #fff;
+  border-radius: 10px;
+  padding: .4rem .6rem;
+  line-height: 1.25;
+  box-shadow: 0 2px 8px rgba(0,0,0,.2);
+  max-width: 260px;
+  margin-bottom: .25rem;
+}
+body:not(.dark-theme) .leaflet-control.map-title {
+  background: rgba(248,250,249,.96);
+  color: #111827;
+}
+.map-title .mt-line1 { font-weight: 600; font-size: .9rem; }
+.map-title .mt-line2 { font-weight: 700; font-size: .9rem; }
+
+/* Gray legend: smaller box, no hint line, no circular pills */
+.leaflet-control.missing-legend {
+  background: rgba(248,250,249,.95);
+  color: #111827;
+  border-radius: 10px;
+  padding: .4rem;
+  box-shadow: 0 2px 8px rgba(0,0,0,.2);
+  max-height: 38vh;
+  overflow: auto;
+  min-width: 210px;
+}
+body.dark-theme .leaflet-control.missing-legend {
+  background: rgba(29,31,32,.92);
+  color: #e6e6e6;
+}
+.missing-legend .legend-title { font-weight: 700; font-size: .9rem; margin-bottom: .25rem; }
+.missing-legend .legend-item {
+  display: flex;
+  align-items: center;
+  gap: .4rem;
+  padding: .2rem .2rem;
+  border-radius: 8px;
+}
+.missing-legend .legend-item:hover {
+  background: rgba(0,0,0,.06);
+}
+body.dark-theme .missing-legend .legend-item:hover {
+  background: rgba(255,255,255,.06);
+}
+.missing-legend .swatch { width: 12px; height: 12px; border-radius: 3px; box-shadow: inset 0 0 0 1px rgba(0,0,0,.25); }
+.missing-legend .name { flex: 1; min-width: 0; font-size: .85rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* simple inline checkboxes (no circular "pills") */
+.missing-legend label.tog {
+  display: inline-flex;
+  align-items: center;
+  gap: .3rem;
+  font-size: .8rem;
+  margin: 0 .2rem;
+}
+
+/* remove the old pill styling if it exists */
+.missing-legend .pill, .missing-legend .pill.on { border: none; background: transparent; padding: 0; }
+
+.missing-legend .legend-remove {
+  background: transparent;
+  border: none;
+  color: inherit;
+  font-weight: 700;
+  line-height: 1;
+  width: 1.25rem;
+  height: 1.25rem;
+  border-radius: 999px;
+  cursor: pointer;
+  opacity: .75;
+}
+.missing-legend .legend-remove:hover { opacity: 1; }
+
+/* Make Leaflet's container fill the screen when toggled */
+.leaflet-container.is-fullscreen {
+  position: fixed !important;
+  inset: 0 !important;
+  width: 100vw !important;
+  height: 100vh !important;
+  z-index: 1000 !important;
+  border-radius: 0 !important;
+}
+
+/* Remove SVG export options from the Markmap toolbar */
+.mm-toolbar [data-act="export-svg"],
+.mm-toolbar [data-act="copy-svg"],
+.mm-toolbar .dropdown-item[data-act="export-svg"],
+.mm-toolbar .dropdown-item[data-act="copy-svg"],
+.mm-toolbar [data-act*="svg"],
+.mm-toolbar .dropdown-item[data-act*="svg"] {
+  display: none !important;
+}

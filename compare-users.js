@@ -9,7 +9,7 @@ function readObservedDatesCompare() {
 }
 
 // --- Public-mode browser fetch helper ---
-async function fetchUserObsMinimal({ username, taxonId, placeId, d1, d2, maxPages=100 }) {
+async function fetchUserObsMinimal({ username, taxonId, placeId, d1, d2, maxPages=100, onProgress }) {
   const per=200; let page=1, all=[];
   const sleep = ms => new Promise(r=>setTimeout(r,ms));
   while (page<=maxPages) {
@@ -24,6 +24,10 @@ async function fetchUserObsMinimal({ username, taxonId, placeId, d1, d2, maxPage
     u.searchParams.set('verifiable','any');
     u.searchParams.set('per_page', String(per));
     u.searchParams.set('page', String(page));
+
+    // Report progress
+    if (onProgress) onProgress({ page, count: all.length });
+
     const r = await fetch(u);
     if (r.status===429 || (r.status>=500 && r.status<600)) { await sleep(1200 + Math.random()*600); continue; }
     const j = await r.json().catch(()=>({results:[]}));
@@ -54,9 +58,11 @@ async function resolveTaxonTitle(taxonId) {
 function showCompareLoadingSpinner() {
   const spinnerContainer = document.getElementById("compareLoadingSpinner");
   const loadingText = document.getElementById("compareLoadingText");
+  const loadingProgress = document.getElementById("compareLoadingProgress");
   const resultsCard = document.getElementById("resultsCard");
   resultsCard.style.display = "none";
   spinnerContainer.style.display = "flex";
+  if (loadingProgress) loadingProgress.textContent = "";
   const battleMessages = [
     "Initializing the taxonomic battlefield...",
     "Pitting naturalists against each other...",
@@ -84,6 +90,13 @@ function showCompareLoadingSpinner() {
 
 function hideCompareLoadingSpinner() {
   document.getElementById("compareLoadingSpinner").style.display = "none";
+  const loadingProgress = document.getElementById("compareLoadingProgress");
+  if (loadingProgress) loadingProgress.textContent = "";
+}
+
+function updateCompareLoadingProgress(text) {
+  const loadingProgress = document.getElementById("compareLoadingProgress");
+  if (loadingProgress) loadingProgress.textContent = text;
 }
 
 import { getAuthHeaders } from './auth.js';
@@ -231,10 +244,27 @@ document.addEventListener('DOMContentLoaded', function() {
         
         let result;
         if (PUBLIC_MODE) {
+          // Track progress for both users
+          let u1Progress = { page: 0, count: 0 };
+          let u2Progress = { page: 0, count: 0 };
+          const updateProgress = () => {
+            updateCompareLoadingProgress(
+              `${username1}: page ${u1Progress.page} (${u1Progress.count} obs) | ${username2}: page ${u2Progress.page} (${u2Progress.count} obs)`
+            );
+          };
+
           const [{ taxonIds: u1 }, { taxonIds: u2 }] = await Promise.all([
-            fetchUserObsMinimal({ username: username1, taxonId, d1, d2 }),
-            fetchUserObsMinimal({ username: username2, taxonId, d1, d2 })
+            fetchUserObsMinimal({
+              username: username1, taxonId, d1, d2,
+              onProgress: (p) => { u1Progress = p; updateProgress(); }
+            }),
+            fetchUserObsMinimal({
+              username: username2, taxonId, d1, d2,
+              onProgress: (p) => { u2Progress = p; updateProgress(); }
+            })
           ]);
+
+          updateCompareLoadingProgress(`Building comparison tree...`);
           const r2 = await fetch(`${API_BASE}/compare-from-species`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
