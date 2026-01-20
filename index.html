@@ -607,14 +607,12 @@
               </div>
 
               <!-- Date range filter (Observed date) -->
-              <div class="row g-2 align-items-end mb-3">
-                <div class="col-auto">
-                  <label for="obsStart" class="form-label mb-0 small">Observed from</label>
-                  <input type="date" class="form-control form-control-sm" id="obsStart" placeholder="YYYY-MM-DD">
-                </div>
-                <div class="col-auto">
-                  <label for="obsEnd" class="form-label mb-0 small">to</label>
-                  <input type="date" class="form-control form-control-sm" id="obsEnd" placeholder="YYYY-MM-DD">
+              <div class="mb-3">
+                <label class="form-label text-muted small mb-1">Filter by observation date (optional)</label>
+                <div class="d-flex align-items-center gap-2 flex-wrap">
+                  <input type="date" class="form-control" id="obsStart" style="max-width: 160px;">
+                  <span class="text-muted">to</span>
+                  <input type="date" class="form-control" id="obsEnd" style="max-width: 160px;">
                 </div>
               </div>
 
@@ -693,14 +691,12 @@
           </div>
 
           <!-- Date range filter for Compare (Observed date) -->
-          <div class="row g-2 align-items-end mb-3">
-            <div class="col-auto">
-              <label for="obsStartCompare" class="form-label mb-0 small">Observed from</label>
-              <input type="date" class="form-control form-control-sm" id="obsStartCompare" placeholder="YYYY-MM-DD">
-            </div>
-            <div class="col-auto">
-              <label for="obsEndCompare" class="form-label mb-0 small">to</label>
-              <input type="date" class="form-control form-control-sm" id="obsEndCompare" placeholder="YYYY-MM-DD">
+          <div class="mb-3">
+            <label class="form-label text-muted small mb-1">Filter by observation date (optional)</label>
+            <div class="d-flex align-items-center gap-2 flex-wrap">
+              <input type="date" class="form-control" id="obsStartCompare" style="max-width: 160px;">
+              <span class="text-muted">to</span>
+              <input type="date" class="form-control" id="obsEndCompare" style="max-width: 160px;">
             </div>
           </div>
 
