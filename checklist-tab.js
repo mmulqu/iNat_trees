@@ -114,31 +114,6 @@ async function initChecklistUI(){
     else { alert('Type/select a taxon or include a numeric ID in the box.'); }
   });
 
-  // hydrate button
-  document.getElementById('clHydrateBtn').addEventListener('click', async () => {
-    const region = clRegion.value;
-    const baseId = (document.getElementById('clSelectedTaxonId').value || '').trim();
-    if (!region) return alert('Select a region first');
-
-    setSpinner(true);
-    try {
-      const payload = baseId ? { region_code: region, baseTaxonId: parseInt(baseId,10) }
-                             : { region_code: region };
-      const r = await fetch(`${API}/checklist/hydrate`, {
-        method: 'POST',
-        headers: { 'Content-Type':'application/json', ...authHeaders() },
-        body: JSON.stringify(payload)
-      });
-      const j = await r.json();
-      if (!r.ok) throw new Error(j?.error || r.statusText);
-      alert(`Hydrated ${j.hydrated_species_rows + j.hydrated_ancestor_rows} taxa for ${region}${baseId?` (base ${baseId})`:''}`);
-    } catch (e) { 
-      alert(`Hydrate failed: ${e.message}`); 
-    } finally { 
-      setSpinner(false); 
-    }
-  });
-
   // clear all
   document.getElementById('clClearBtn').addEventListener('click', () => {
     // This now correctly and exclusively uses the manager
