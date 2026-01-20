@@ -862,3 +862,25 @@ body.dark-theme .missing-legend .legend-item:hover {
 .mm-toolbar .dropdown-item[data-act*="svg"] {
   display: none !important;
 }
+
+/* Checklist stats panel */
+.checklist-stats-panel {
+  background: #f8faf9;
+  border: 1px solid var(--border-color);
+}
+
+body.dark-theme .checklist-stats-panel {
+  background: #1d1f20;
+}
+
+.checklist-stats-panel .stat-value {
+  font-size: 1.1rem;
+}
+
+.checklist-stats-panel .progress {
+  background-color: rgba(0, 0, 0, 0.1);
+}
+
+body.dark-theme .checklist-stats-panel .progress {
+  background-color: rgba(255, 255, 255, 0.1);
+}

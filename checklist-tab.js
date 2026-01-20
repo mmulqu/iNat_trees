@@ -323,9 +323,23 @@ function clearAllLayers(pane){
   clearLegend(pane);
 }
 
+// Parse checklist markdown to count seen/unseen species
+function parseChecklistStats(markdown) {
+  const seenMatches = markdown.match(/\{color:#22c55e\}/gi) || [];
+  const unseenMatches = markdown.match(/\{color:#9ca3af\}/gi) || [];
+  const seen = seenMatches.length;
+  const unseen = unseenMatches.length;
+  const total = seen + unseen;
+  const percent = total > 0 ? Math.round((seen / total) * 100) : 0;
+  return { seen, unseen, total, percent };
+}
+
 function addChecklistTreeTab(title, markdown){
   showResultsCard();
   const id = uid();
+
+  // Parse stats from markdown
+  const stats = parseChecklistStats(markdown);
 
   // Read region info at creation time
   const clRegion = document.getElementById('clRegion');
@@ -352,6 +366,32 @@ function addChecklistTreeTab(title, markdown){
   pane.dataset.baseTitle = title;
 
   pane.innerHTML = `
+    <div class="checklist-stats-panel mb-3 p-3 rounded" style="background: var(--background-color); border: 1px solid var(--border-color);">
+      <div class="d-flex align-items-center justify-content-between flex-wrap gap-2">
+        <div class="stats-summary">
+          <span class="fs-5 fw-bold">${stats.percent}%</span>
+          <span class="text-muted ms-1">complete</span>
+        </div>
+        <div class="stats-details d-flex gap-3">
+          <div class="stat-item">
+            <span class="stat-value fw-bold" style="color: #22c55e;">${stats.seen}</span>
+            <span class="stat-label text-muted small ms-1">seen</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-value fw-bold" style="color: #9ca3af;">${stats.unseen}</span>
+            <span class="stat-label text-muted small ms-1">unseen</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-value fw-bold">${stats.total}</span>
+            <span class="stat-label text-muted small ms-1">total species</span>
+          </div>
+        </div>
+        <div class="progress flex-grow-1" style="height: 8px; min-width: 100px; max-width: 200px;">
+          <div class="progress-bar" role="progressbar" style="width: ${stats.percent}%; background-color: #22c55e;"
+               aria-valuenow="${stats.percent}" aria-valuemin="0" aria-valuemax="100"></div>
+        </div>
+      </div>
+    </div>
     <div class="mb-2 d-flex gap-2 align-items-center">
       <button class="btn btn-sm btn-outline-primary" id="${id}-addMoreBtn">+4 More</button>
       <button class="btn btn-sm btn-outline-secondary" id="${id}-clearMapBtn">Clear Map</button>
