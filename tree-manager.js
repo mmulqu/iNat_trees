@@ -1341,7 +1341,7 @@ class TreeManager {
         </ul>
       </div>
 
-      <button class="btn btn-sm btn-light" data-act="share-bsky" title="Share on Bluesky">
+      <button class="btn btn-sm btn-light" data-act="share-bsky" title="Share on Bluesky" style="display:none;">
         <span style="font-size:14px;line-height:1">🦋</span>
       </button>
     `;
