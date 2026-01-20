@@ -1,0 +1,61 @@
+# Dependencies
+node_modules/
+
+# Backend files (not needed for static frontend deployment)
+worker.js
+wrangler.toml
+DB_SCHEMA.md
+build_region_checklist_import.mjs
+csv_headers_to_schema.py
+csv_to_sql.py
+patch_53275_fix.sql
+split_csv.ps1
+inat_tax_probe_min.py
+inat_tax_fixup.py
+
+# Replit config (not needed for static hosting)
+.replit
+.replit.backup
+
+# Local data and generated files
+chunks/
+chunks_sql/
+chunks_sql_full/
+out/
+csvs/
+.wrangler/
+.config/
+
+# Database files
+*.db
+*.db-journal
+
+# Large exports and generated schemas
+taxa_supabase_export.csv
+full_schema.sql
+
+# Development
+.DS_Store
+*.log
+.env
+.env.local
+~$*
+.~lock.*
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Temporary files
+*.tmp
+
+# Media files (keep in repo for frontend, but ignore large videos)
+*.mp4
+*.mov
+*.avi
+
+# Note: We keep small images (icons, favicons) for the frontend
+# These are in assets/ and should be committed

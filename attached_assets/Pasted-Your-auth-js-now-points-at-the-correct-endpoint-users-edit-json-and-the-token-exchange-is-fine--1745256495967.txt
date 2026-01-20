@@ -1,0 +1,87 @@
+Your auth.js now points at the correct endpoint (/users/edit.json) and the token exchange is fine — so if the button still doesn’t update, the user‑fetch code simply never runs (or throws before it can send the request).
+
+Below is a short checklist to discover exactly where it stops and to make sure the call appears in the Network panel.
+
+1  Confirm the two modules load in the right order
+html
+Copy
+Edit
+<!-- auth logic: exports fetchCurrentUser, startLogin, … -->
+<script type="module" src="auth.js"></script>
+
+<!-- UI glue that imports auth.js and tweaks the button -->
+<script type="module" src="ui-auth.js"></script>
+If they live in a sub‑folder, use the correct relative paths (js/auth.js, js/ui-auth.js).
+
+Quick test
+Open DevTools → Console and reload:
+
+js
+Copy
+Edit
+// at any time
+import.meta.url
+should return a URL ending in auth.js and ui-auth.js.
+If you see ERR_MODULE_NOT_FOUND, fix the paths.
+
+2  Log inside fetchCurrentUser
+Add one console line:
+
+js
+Copy
+Edit
+export async function fetchCurrentUser() {
+  const token = localStorage.getItem('inat_token');
+  console.log('[fetchCurrentUser] token =', token);   // 👈
+
+  if (!token) return null;
+  …
+}
+Reload after redirect:
+
+No log at all → ui-auth.js never ran (or import failed).
+Re‑check the <script type="module"> order and paths.
+
+Log shows token = null → token wasn’t saved (guard against data.error before storing, as in previous message).
+
+Log shows a token string but you still don’t see GET https://www.inaturalist.org/users/edit.json in Network → the fetch threw before the request (bad URL string, etc.).
+Wrap the call in try…catch (you already do) and console.error(e).
+
+3  Make sure scope is requested
+Even though /users/edit.json usually works with scope=login, ask for it explicitly to be safe:
+
+js
+Copy
+Edit
+authUrl.searchParams.set('scope', 'login');   // or 'read'
+Tokens without the login scope were sometimes rejected by Rails endpoints in older iNat deployments.
+
+4  Double‑check the Response shape
+When the request finally shows up you’ll see either
+
+A) "user": { … } or B) the user object at the root.
+Your parser already handles both (const { user } = await r.json(); return user; → returns undefined in shape B!).
+Fix:
+
+js
+Copy
+Edit
+const data = await r.json();
+return data.user ?? data;      // null‑coalescing
+After those tweaks
+Clear localStorage (inat_token, inat_username) in DevTools → Application.
+
+Run the login again.
+
+In Network you should see:
+
+bash
+Copy
+Edit
+POST  /oauth/token              200
+GET   /users/edit.json          200
+Button flips to
+✓ Connected as <strong>username</strong>
+and the Disconnect link appears.
+
+If /users/edit.json appears but returns 401/403, copy that response and we’ll adjust scopes; otherwise the above steps will surface the missing piece. Let me know what you find!

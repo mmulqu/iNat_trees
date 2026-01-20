@@ -1,0 +1,350 @@
+html {
+  height: 100%;
+  width: 100%;
+}
+
+/* Add these styles to your existing CSS */
+
+/* Tab styling */
+.nav-tabs .nav-link {
+  color: var(--text-color);
+  border-radius: 8px 8px 0 0;
+  padding: 0.5rem 1rem;
+  font-size: 0.9rem;
+}
+
+.nav-tabs .nav-link.active {
+  font-weight: bold;
+  color: var(--primary-color);
+  background-color: #fff;
+  border-color: var(--border-color) var(--border-color) #fff;
+}
+
+.nav-tabs .nav-link:hover:not(.active) {
+  background-color: rgba(0, 0, 0, 0.05);
+  border-color: transparent;
+}
+
+/* Close button in tabs */
+.nav-tabs .btn-close {
+  width: 0.5rem;
+  height: 0.5rem;
+  padding: 0;
+  margin-left: 0.5rem;
+  opacity: 0.3;
+}
+
+.nav-tabs .nav-link:hover .btn-close,
+.nav-tabs .nav-link.active .btn-close {
+  opacity: 0.6;
+}
+
+.nav-tabs .btn-close:hover {
+  opacity: 1;
+}
+
+/* Tree info section */
+.tree-info {
+  background-color: #f8f9fa;
+  border-radius: 4px;
+  padding: 0.5rem;
+  font-size: 0.85rem;
+  border-left: 3px solid var(--primary-color);
+}
+
+/* Tab scroll for many tabs */
+#treeTabs {
+  overflow-x: auto;
+  flex-wrap: nowrap;
+  scrollbar-width: thin;
+  padding-bottom: 2px;
+}
+
+#treeTabs::-webkit-scrollbar {
+  height: 6px;
+}
+
+#treeTabs::-webkit-scrollbar-thumb {
+  background-color: var(--primary-color);
+  border-radius: 3px;
+}
+
+/* Responsive tabs */
+@media (max-width: 768px) {
+  .nav-tabs .nav-link {
+    padding: 0.4rem 0.6rem;
+    font-size: 0.8rem;
+  }
+}
+
+/* Styles for the comparison feature */
+
+/* Battle tab visual indicator */
+.nav-tabs .nav-link[id$="-tab"] .tab-title::before {
+  content: '';
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 5px;
+  border-radius: 50%;
+}
+
+/* Visual indicator for battle tabs */
+.nav-tabs .battle-tab .tab-title::before {
+  background: linear-gradient(to right, #ff6b6b 50%, #4dabf7 50%);
+}
+
+/* Battle summary card */
+.battle-summary {
+  margin-top: 20px;
+  border-radius: 8px;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+  overflow: hidden;
+}
+
+.battle-summary-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 15px;
+  background-color: #f8f9fa;
+  border-bottom: 1px solid #dee2e6;
+}
+
+.battle-user {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.battle-user-avatar {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background-color: var(--primary-color);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: white;
+  font-weight: bold;
+}
+
+.battle-user-1 .battle-user-avatar {
+  background-color: #ff6b6b;
+}
+
+.battle-user-2 .battle-user-avatar {
+  background-color: #4dabf7;
+}
+
+.battle-stats {
+  display: flex;
+  justify-content: space-around;
+  padding: 15px;
+  text-align: center;
+}
+
+.battle-stat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.battle-stat-value {
+  font-size: 24px;
+  font-weight: bold;
+  margin-bottom: 5px;
+}
+
+.battle-stat-label {
+  font-size: 14px;
+  color: #6c757d;
+}
+
+/* Visual progress bar for comparison */
+.battle-progress {
+  height: 30px;
+  margin: 0 15px 15px;
+  border-radius: 15px;
+  overflow: hidden;
+  background-color: #e9ecef;
+}
+
+.battle-progress-bar {
+  height: 100%;
+  display: flex;
+}
+
+.user1-bar {
+  background-color: #ff6b6b;
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  padding-right: 10px;
+  color: white;
+  font-weight: bold;
+}
+
+.shared-bar {
+  background-color: #cc5de8;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  color: white;
+  font-weight: bold;
+}
+
+.user2-bar {
+  background-color: #4dabf7;
+  display: flex;
+  justify-content: flex-start;
+  align-items: center;
+  padding-left: 10px;
+  color: white;
+  font-weight: bold;
+}
+
+/* Color legend */
+.color-legend {
+  display: flex;
+  justify-content: center;
+  gap: 20px;
+  margin: 15px;
+}
+
+.color-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.color-indicator {
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+}
+
+/* Custom markmap styling for comparison trees */
+.comparison-tree .markmap-node text {
+  transition: font-size 0.3s ease, font-weight 0.3s ease;
+}
+
+.comparison-tree .markmap-node:hover text {
+  font-size: 1.2em;
+  font-weight: bold;
+}
+
+/* Comparison tab styling */
+.tab-content .tab-pane.comparison-tab .markmap-container {
+  border: 1px solid #dee2e6;
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 0 10px rgba(0,0,0,0.05);
+}
+
+/* User vs User title style */
+.vs-title {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  margin-bottom: 15px;
+}
+
+.vs-title .username {
+  font-weight: bold;
+  padding: 5px 10px;
+  border-radius: 4px;
+}
+
+.vs-title .username-1 {
+  background-color: rgba(255, 107, 107, 0.2);
+  color: #e03131;
+}
+
+.vs-title .username-2 {
+  background-color: rgba(77, 171, 247, 0.2);
+  color: #1c7ed6;
+}
+
+.vs-title .vs-badge {
+  background-color: #f8f9fa;
+  color: #495057;
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-weight: bold;
+  font-size: 0.9em;
+}
+
+/* Taxon information tooltip */
+.taxon-tooltip {
+  position: absolute;
+  background-color: white;
+  border: 1px solid #dee2e6;
+  border-radius: 4px;
+  padding: 10px;
+  box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+  z-index: 1000;
+  max-width: 300px;
+  display: none;
+}
+
+.taxon-tooltip.visible {
+  display: block;
+}
+
+.taxon-tooltip-title {
+  font-weight: bold;
+  margin-bottom: 5px;
+  border-bottom: 1px solid #dee2e6;
+  padding-bottom: 5px;
+}
+
+.taxon-tooltip-content {
+  font-size: 0.9em;
+}
+
+/* Animation for the comparison loading */
+@keyframes pulsate {
+  0% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.05); opacity: 0.8; }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+.battle-loading {
+  animation: pulsate 1.5s infinite ease-in-out;
+}
+
+/* Comparison tree text colors for HTML labels */
+.user1-node {
+  color: #dc2626 !important; /* red-600 */
+  font-weight: 600;
+}
+
+.user2-node {
+  color: #2563eb !important; /* blue-600 */
+  font-weight: 600;
+}
+
+.shared-node {
+  color: #9333ea !important; /* purple-600 */
+  font-weight: 600;
+}
+
+/* Dark mode text colors - brighter for visibility */
+.dark-theme .user1-node {
+  color: #f87171 !important; /* red-400 */
+}
+
+.dark-theme .user2-node {
+  color: #60a5fa !important; /* blue-400 */
+}
+
+.dark-theme .shared-node {
+  color: #c084fc !important; /* purple-400 */
+}
+
+/* Ensure markmap foreign objects work in dark mode */
+.dark-theme .markmap-foreign {
+  color: inherit;
+}

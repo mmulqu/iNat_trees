@@ -1,0 +1,19 @@
+{
+  "name": "iNaturalist Taxa Trees",
+  "short_name": "Taxa Trees",
+  "icons": [
+    {
+      "src": "android-chrome-192x192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "android-chrome-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ],
+  "theme_color": "#3fac8c",
+  "background_color": "#0b1520",
+  "display": "standalone"
+}

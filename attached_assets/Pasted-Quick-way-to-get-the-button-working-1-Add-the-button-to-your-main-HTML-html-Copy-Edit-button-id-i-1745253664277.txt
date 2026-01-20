@@ -1,0 +1,159 @@
+Quick way to get the button working
+1  Add the button to your main HTML
+html
+Copy
+Edit
+<button id="inatLogin" class="btn btn-success">
+  <img src="https://www.inaturalist.org/favicon.ico" style="width:18px;margin-right:6px">
+  Connect my iNaturalist account
+</button>
+Put it somewhere visible (e.g., next to the username input).
+
+2  Create pkce.js (helper)
+js
+Copy
+Edit
+// pkce.js  — minimal helper
+export async function sha256base64url(str) {
+  const buf = new TextEncoder().encode(str);
+  const hash = await crypto.subtle.digest('SHA-256', buf);
+  return btoa(String.fromCharCode(...new Uint8Array(hash)))
+          .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+3  Add inat-auth.js and import the helper
+html
+Copy
+Edit
+<script type="module" src="/js/inat-auth.js"></script>
+js
+Copy
+Edit
+// /js/inat-auth.js  (module)
+import { sha256base64url } from './pkce.js';
+
+const clientId    = 'YOUR_APP_ID';
+const redirectUri = `${location.origin}/auth/callback.html`;
+
+document.addEventListener('DOMContentLoaded', () => {
+  const btn = document.getElementById('inatLogin');
+  if (!btn) return;
+
+  btn.addEventListener('click', async () => {
+    const codeVerifier  = crypto.randomUUID() + crypto.randomUUID();
+    localStorage.setItem('inat_code_verifier', codeVerifier);
+
+    const codeChallenge = await sha256base64url(codeVerifier);
+
+    const auth = new URL('https://www.inaturalist.org/oauth/authorize');
+    auth.searchParams.set('client_id', clientId);
+    auth.searchParams.set('redirect_uri', redirectUri);
+    auth.searchParams.set('response_type', 'code');
+    auth.searchParams.set('code_challenge_method', 'S256');
+    auth.searchParams.set('code_challenge', codeChallenge);
+
+    window.location.href = auth.toString();
+  });
+});
+4  Add auth/callback.html
+html
+Copy
+Edit
+<!DOCTYPE html><meta charset="utf-8">
+<script type="module">
+  const params = new URLSearchParams(location.search);
+  const code   = params.get('code');
+  if (!code) { document.body.textContent = 'No code :('; }
+
+  const verifier = localStorage.getItem('inat_code_verifier');
+  const body = new URLSearchParams({
+    client_id:     'YOUR_APP_ID',
+    grant_type:    'authorization_code',
+    code,
+    redirect_uri:  location.origin + '/auth/callback.html',
+    code_verifier: verifier
+  });
+
+  const res   = await fetch('https://www.inaturalist.org/oauth/token', {
+    method: 'POST',
+    headers: { 'Content-Type':'application/x-www-form-urlencoded' },
+    body
+  }).then(r => r.json());
+
+  localStorage.setItem('inat_token', res.access_token);
+  // back to app
+  location.href = '/';
+</script>
+5  Use the token in your existing fetches
+Inside any Edge‑function call or direct client fetch you can now do:
+
+js
+Copy
+Edit
+const token = localStorage.getItem('inat_token');
+const headers = token ? { Authorization: `Bearer ${token}` } : {};
+fetch('https://api.inaturalist.org/v1/observations?...', { headers });
+Or pass the token through your body to your Supabase function so the request is still server‑side.
+
+Why it matters
+Rate limits – each user’s token counts against their quota, not your server’s IP.
+
+Private / obscured data – the token lets your app pull fields that are hidden from anonymous requests.
+
+Write actions – if you later add “Add to Project” or “Create Observation” buttons, you’ll need the user’s token.
+
+If you’d prefer to keep the token on the server (and not expose it in localStorage), you can send it to Supabase via fetch('/.netlify/functions/...', { headers }) and never store it client‑side. But wiring the button exactly as above will at least get you a redirect to iNat and the expected “approve app” screen instead of doing nothing.
+
+
+
+
+
+
+You said:
+im registering my app in inaturalist. what should be the redirect uri?
+New application
+Image
+No file chosen
+Name *
+iNat-taxa-trees
+Redirect uri *
+https://inat-trees.replit.app/
+ Confidential
+Make your app confidential if you can store your app secret securely, i.e. not in a publicly availble binary that can be decompiled. Uncheck this box if this is not the case and you plan to use the PKCE flow
+
+Description
+Visualize your iNaturalist observations using taxonomic trees from the iNaturalist taxonomy. Compare your trees to your friends! Explore how your wildlife sightings branch across kingdoms, families, and species.
+Url
+URL for your app outside of iNaturalist
+
+https://inat-trees.replit.app/
+ 
+
+
+ChatGPT said:
+Use a dedicated callback URL that lives on your own domain and that only PKCE‑redirects back into the app. A good, conventional choice for your Replit site is:
+
+arduino
+Copy
+Edit
+https://inat-trees.replit.app/auth/callback
+Why this path?
+
+Exact‑match – iNaturalist will only exchange the code for a token if the redirect_uri in your token‐exchange POST is identical to the one you registered.
+
+Separation of concerns – keeping all OAuth logic in /auth/callback prevents accidental reload loops on your main page.
+
+HTTPS – Replit’s default domain is already HTTPS, which iNat requires.
+
+What to do next
+Add a simple HTML page at that path
+e.g. static/auth/callback.html (or a route in your framework) that runs the token‑exchange script we discussed.
+
+Update your client code
+Wherever you build the authorize URL, use the same constant:
+
+js
+Copy
+Edit
+const redirectUri = 'https://inat-trees.replit.app/auth/callback';
+Un‑check “Confidential”
+Because your app is a browser‑only SPA, you can’t keep the client secret safe. Use the PKCE flow with the “Confidential” box unchecked.

@@ -1,0 +1,79 @@
+Yes—every request you send with
+getAuthHeaders() now carries that particular user’s bearer token, so you’re acting on their iNaturalist account (with their rate‑limit, access to their private/obscured coords, ability to write if you ever add those scopes, etc.).
+
+Give the user visual feedback that they’re connected
+Right now the button text never changes because you only replace it while redirecting.
+Once the redirect finishes and the page reloads, inatLogin is rebuilt from the HTML and shows the original label.
+
+1  Fetch who the token belongs to
+Add this helper to auth.js:
+
+js
+Copy
+Edit
+export async function fetchCurrentUser() {
+  const token = localStorage.getItem('inat_token');
+  if (!token) return null;
+
+  try {
+    const r = await fetch('https://api.inaturalist.org/v1/users/me', {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    const { results } = await r.json();
+    return results?.[0] ?? null;       // { id, login, name, icon_url, … }
+  } catch (e) {
+    console.warn('Token may be invalid', e);
+    return null;
+  }
+}
+2  Tweak handleCallback() to store the user login
+js
+Copy
+Edit
+const token = await r.json();
+localStorage.setItem('inat_token', token.access_token);
+
+// get the username once, so you don't need an extra API call next load
+const me = await fetchCurrentUser();
+if (me) localStorage.setItem('inat_username', me.login);
+
+window.location = '/';
+(Import fetchCurrentUser at the top of auth.js.)
+
+3  Update the UI on every page load
+In script.js (or a tiny ui-auth.js module) run:
+
+js
+Copy
+Edit
+import { fetchCurrentUser, startLogin } from './auth.js';
+
+document.addEventListener('DOMContentLoaded', async () => {
+  const btn = document.getElementById('inatLogin');
+  if (!btn) return;
+
+  const existingUser = localStorage.getItem('inat_username')
+                    || (await fetchCurrentUser())?.login;
+
+  if (existingUser) {
+    btn.classList.replace('btn-success', 'btn-outline-secondary');
+    btn.innerHTML = `<i class="bi bi-check-circle me-1"></i> Connected as <strong>${existingUser}</strong>`;
+    btn.disabled = true;        // or change to “Disconnect” if you add logout
+  } else {
+    btn.addEventListener('click', startLogin);
+  }
+});
+4  (optional) Add a Logout / Disconnect link
+html
+Copy
+Edit
+<button id="inatLogout" class="btn btn-sm btn-link d-none">Disconnect</button>
+js
+Copy
+Edit
+document.getElementById('inatLogout')?.addEventListener('click', () => {
+  localStorage.removeItem('inat_token');
+  localStorage.removeItem('inat_username');
+  location.reload();
+});
+Show it (classList.remove('d-none')) when the user is connected.

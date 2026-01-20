@@ -1,0 +1,72 @@
+Why the button seems inert
+script.js is written as an ES‑module
+
+js
+Copy
+Edit
+import { startLogin } from './auth.js';
+…but in index.html you load it with a plain <script> tag:
+
+html
+Copy
+Edit
+<script src="script.js"></script>
+When the browser parses that line it hits the very first import … from and throws a SyntaxError: unexpected identifier.
+Parsing stops right there, so none of the DOM‑ready handlers are attached and the inatLogin button never receives a click listener—hence “nothing happens.”
+
+You’ll see this error in DevTools → Console if you scroll to the top.
+
+Fix 1 – load script.js as a module
+html
+Copy
+Edit
+<!-- change this -->
+<!-- <script src="script.js"></script> -->
+
+<!-- to this -->
+<script type="module" src="script.js"></script>
+ES‑modules are deferred automatically, so they execute after the DOM is parsed; the DOMContentLoaded listener inside script.js will still fire.
+
+Fix 2 – give the user instant feedback
+Inside auth.js (or in the click handler) add a quick visual cue:
+
+js
+Copy
+Edit
+export function startLogin() {
+  const btn = document.getElementById('inatLogin');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span> Redirecting…';
+
+  const codeVerifier = crypto.randomUUID() + crypto.randomUUID();
+  localStorage.setItem('inat_code_verifier', codeVerifier);
+
+  import('./pkce.js').then(async ({ sha256base64url }) => {
+    /* build authUrl exactly as you already do */
+    window.location.href = authUrl;
+  }).catch(err => {
+    console.error(err);
+    btn.disabled = false;
+    btn.textContent = 'Connect my iNaturalist account';
+    alert('Could not start login – see console for details.');
+  });
+}
+Now the button shows a Bootstrap spinner the moment it’s clicked, so the user knows a redirect is underway (or something went wrong).
+
+Checklist to make the whole flow work
+Turn every file that uses import / export into a module
+
+html
+Copy
+Edit
+<script type="module" src="auth.js"></script> <!-- if you need it explicitly -->
+<script type="module" src="script.js"></script>
+Ensure file paths are correct in relation to index.html.
+Replit usually serves /auth.js, /pkce.js etc. from the project root; adjust if they’re in a js/ folder.
+
+Confirm the callback URL (https://inat-trees.replit.app/auth/callback) exists and the code in handleCallback() runs there.
+
+Watch DevTools → Network when you click the button—you should be redirected to
+https://www.inaturalist.org/oauth/authorize?....
+
+Make those tweaks, and the button will actually take you to the iNaturalist authorization screen. Let me know if you run into any other bumps!

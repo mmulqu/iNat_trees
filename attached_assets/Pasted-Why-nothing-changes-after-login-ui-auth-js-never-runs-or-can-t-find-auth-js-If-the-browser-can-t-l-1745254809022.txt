@@ -1,0 +1,88 @@
+Why nothing changes after login
+ui-auth.js never runs (or can’t find auth.js)
+If the browser can’t load ui-auth.js or the relative import path inside it is wrong, no DOM tweaks happen—your button keeps the original HTML and the logout link stays hidden.
+Open DevTools → Console and you’ll see something like
+Failed to load module script: Expected a JavaScript module. or
+Cannot find module './auth.js'.
+
+DOMContentLoaded fires before auth.js attaches its listener
+In auth.js you add a DOMContentLoaded handler, but that file is only imported after the document is already parsed, so the callback never fires. That’s harmless for the login flow (because ui-auth.js attaches startLogin anyway) but worth cleaning up.
+
+Quick checklist & fix
+
+What to check	How to fix
+Correct file paths	If your files live in a /js/ folder, update the imports and <script> tags:
+<script type="module" src="js/ui-auth.js"></script>
+and in ui-auth.js:
+import { fetchCurrentUser, startLogin } from './auth.js'; → import { fetchCurrentUser, startLogin } from './js/auth.js';
+Load auth.js once, explicitly	Add <script type="module" src="js/auth.js"></script> just above the line that loads js/ui-auth.js. Then delete the DOMContentLoaded code inside auth.js — UI wiring is handled in ui-auth.js.
+Watch the console	Reload the page and check DevTools. No 404/ERR_MODULE_NOT_FOUND messages should appear.
+Verify inat_username exists	In DevTools > Application > Local Storage, you should see inat_username & inat_token. If they’re missing the token‑exchange failed; check Network tab for POST https://www.inaturalist.org/oauth/token.
+Minimal working wiring
+html
+Copy
+Edit
+<!-- near the end of <body> -->
+
+<!-- 1️⃣  Auth logic (exports functions) -->
+<script type="module" src="/js/auth.js"></script>
+
+<!-- 2️⃣  UI glue that imports auth.js and tweaks the DOM -->
+<script type="module" src="/js/ui-auth.js"></script>
+auth.js (cleaned):
+
+js
+Copy
+Edit
+export const CLIENT_ID = 'kNg0gso…';
+export const REDIRECT_URI = 'https://inat-trees.replit.app/auth/callback';
+
+export function startLogin() { /* your spinner + redirect code */ }
+
+export async function handleCallback() { /* store token + username */ }
+
+export async function fetchCurrentUser() { /* GET /v1/users/me */ }
+
+export function getAuthHeaders() { /* ... */ }
+Remove the first‐file DOMContentLoaded block from auth.js; it’s redundant.
+
+ui-auth.js (path adjusted):
+
+js
+Copy
+Edit
+import { fetchCurrentUser, startLogin } from './js/auth.js';
+
+document.addEventListener('DOMContentLoaded', async () => {
+  const btn       = document.getElementById('inatLogin');
+  const logoutBtn = document.getElementById('inatLogout');
+  if (!btn) return;
+
+  const existingUser = localStorage.getItem('inat_username')
+                  || (await fetchCurrentUser())?.login;
+
+  if (existingUser) {
+    btn.classList.replace('btn-success', 'btn-outline-secondary');
+    btn.innerHTML = `<i class="bi bi-check-circle me-1"></i>
+                     Connected as <strong>${existingUser}</strong>`;
+    btn.disabled = true;
+    logoutBtn?.classList.remove('d-none');
+    logoutBtn?.addEventListener('click', () => {
+      localStorage.removeItem('inat_token');
+      localStorage.removeItem('inat_username');
+      location.reload();
+    });
+  } else {
+    btn.addEventListener('click', startLogin);
+  }
+});
+Test it
+Clear localStorage to force a fresh login.
+
+Click Connect my iNaturalist account → approve → redirect back.
+
+Page reloads: button now shows ✓ Connected as username and the Disconnect link is visible.
+
+Click Disconnect: localStorage keys are wiped and the page reloads to the original state.
+
+If any step still fails, copy the exact console error and we’ll squash it!

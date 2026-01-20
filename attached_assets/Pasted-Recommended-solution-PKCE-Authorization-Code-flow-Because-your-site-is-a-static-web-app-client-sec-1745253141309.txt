@@ -1,0 +1,81 @@
+Recommended solution: PKCE Authorization‑Code flow
+Because your site is a static web app (client secrets can’t be kept safe) PKCE is the officially supported, secure flow.
+
+Register an iNat application
+
+Settings → Developer Tools → “Create a new application”
+
+Callback / redirect URI: https://your‑site.com/auth/callback
+
+Add a “Connect to iNaturalist” button
+
+html
+Copy
+Edit
+<button id="inatLogin">Connect my iNaturalist account</button>
+Build the login handler (client‑side JS)
+
+js
+Copy
+Edit
+import { sha256base64url } from './pkce.js'; // helper to hash & encode
+
+const clientId = 'YOUR_APP_ID';
+const redirectUri = 'https://your-site.com/auth/callback';
+
+function startLogin() {
+  const codeVerifier = crypto.randomUUID() + crypto.randomUUID();
+  localStorage.setItem('inat_code_verifier', codeVerifier);
+
+  const codeChallenge = sha256base64url(codeVerifier);
+  const authUrl = new URL('https://www.inaturalist.org/oauth/authorize');
+  authUrl.searchParams.set('client_id',  clientId);
+  authUrl.searchParams.set('redirect_uri', redirectUri);
+  authUrl.searchParams.set('response_type', 'code');
+  authUrl.searchParams.set('code_challenge_method', 'S256');
+  authUrl.searchParams.set('code_challenge', codeChallenge);
+
+  window.location = authUrl;
+}
+
+document.getElementById('inatLogin').addEventListener('click', startLogin);
+Handle the redirect (/auth/callback page)
+
+js
+Copy
+Edit
+// auth-callback.js
+(async () => {
+  const params = new URLSearchParams(window.location.search);
+  const code = params.get('code');
+  if (!code) return;
+
+  const codeVerifier = localStorage.getItem('inat_code_verifier');
+  const body = new URLSearchParams({
+    client_id:     'YOUR_APP_ID',
+    grant_type:    'authorization_code',
+    code,
+    redirect_uri:  redirectUri,
+    code_verifier: codeVerifier
+  });
+
+  const r = await fetch('https://www.inaturalist.org/oauth/token', {
+    method: 'POST',
+    headers: { 'Content-Type':'application/x-www-form-urlencoded' },
+    body
+  });
+  const token = await r.json();          // { access_token, … }
+  localStorage.setItem('inat_token', token.access_token);
+  window.location = '/';                 // back to main app
+})();
+Use the token
+
+js
+Copy
+Edit
+function getUserObservations(username) {
+  const token = localStorage.getItem('inat_token');
+  const headers = token ? { Authorization: `Bearer ${token}` } : {};
+  return fetch(`https://api.inaturalist.org/v1/observations?user_id=${username}`, { headers })
+         .then(r => r.json());
+}

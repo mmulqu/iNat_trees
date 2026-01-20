@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>iNaturalist Taxa Trees — Explore (Public mode)</title>
+  <meta name="description" content="Visualize and compare your iNaturalist observations as taxonomic trees. Enter without signing in to use public iNaturalist data; sign in later if you want private features." />
+  <meta name="color-scheme" content="light dark" />
+
+  <!-- Bootstrap & Icons -->
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css" rel="stylesheet">
+
+  <!-- Preload background poster/video -->
+  <link rel="preload" as="image" href="/assets/ferns-poster.jpg">
+  <link rel="preload" as="video" href="/assets/5049502-hd_1920_1080_24fps.mp4" type="video/mp4">
+  <!-- Preload feature assets -->
+  <link rel="preload" as="image" href="/assets/battle_img.jpg">
+  <link rel="preload" as="image" href="/assets/battle_stats.jpg">
+  <link rel="preload" as="image" href="/assets/timeline_gif.gif">
+
+  <style>
+    :root{
+      --brand:#3fac8c; --brand-2:#2d7d64;
+      --text:#0f172a; --text-inv:#f8fafc;
+      --scrim: rgba(12, 18, 22, 0.42);
+    }
+    @media (prefers-color-scheme: dark){
+      :root{ --text:#e6e6e6; --scrim: rgba(7,10,12,0.55); }
+    }
+    html { scroll-behavior: smooth; }
+    html, body { height: 100%; }
+    body{
+      margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial, "Noto Sans", "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol";
+      color:var(--text); overflow-x:hidden;
+      background: #0b1512;
+    }
+
+    /* Fullscreen background video */
+    .bg-video-wrap{ position: fixed; inset: 0; z-index: -2; overflow: hidden; }
+    .bg-video{
+      position: absolute; inset: 0; width: 100%; height: 100%;
+      object-fit: cover; object-position: center;
+      filter: blur(6px) saturate(1.1);
+      transform: scale(1.06);
+      will-change: transform, filter;
+      pointer-events: none;
+    }
+    .bg-scrim{
+      position: fixed; inset: 0; z-index:-1;
+      background:
+        radial-gradient(1200px 800px at 50% 15%, rgba(0,0,0,0.2), transparent 60%),
+        linear-gradient(to bottom, var(--scrim), rgba(0,0,0,0.35));
+      pointer-events: none;
+    }
+
+    /* Hero */
+    .hero{
+      min-height: 100svh;
+      display: grid;
+      place-items: center;
+      padding: clamp(24px, 4vw, 56px);
+      text-align: center;
+      position: relative;
+    }
+    .hero-card{
+      position: relative; /* Add this to contain the absolute positioned elements properly */
+      backdrop-filter: blur(4px);
+      -webkit-backdrop-filter: blur(4px);
+      background: rgba(255,255,255,0.68);
+      border: 1px solid rgba(255,255,255,0.3);
+      border-radius: 18px;
+      padding: clamp(24px, 4vw, 40px);
+      max-width: 860px;
+      box-shadow: 0 10px 40px rgba(0,0,0,0.20);
+    }
+    @media (prefers-color-scheme: dark){
+      .hero-card{
+        background: rgba(20,22,23,0.65);
+        border-color: rgba(255,255,255,0.06);
+      }
+    }
+    .brand-badge{
+      display:inline-flex; align-items:center; gap:.6rem;
+      padding:.35rem .7rem; border-radius:999px; font-weight:600;
+      background: rgba(63,172,140,.14); color: var(--text);
+      border: 1px solid rgba(63,172,140,.36);
+    }
+    .hero h1{ font-weight: 800; letter-spacing:-.02em; line-height:1.05; margin: 14px 0 10px; }
+    .lead{ font-size: clamp(1.0rem, 1.7vw, 1.15rem); color: rgba(255,255,255,.92); margin-bottom: 1.5rem; }
+    @media (prefers-color-scheme: light){ .lead{ color:#1f2a37; } }
+
+    /* CTA */
+    .cta{ display:flex; flex-wrap:wrap; gap:12px; justify-content:center; margin-top:1.5rem; }
+    .btn-inat{
+      font-weight:800; font-size: clamp(1.0rem, 1.5vw, 1.15rem);
+      padding:1rem 1.4rem; border-radius:14px;
+      display:inline-flex; align-items:center; gap:.55rem;
+      background: var(--brand); color:#fff; border:none; white-space: nowrap;
+    }
+    .btn-inat:hover{ background: var(--brand-2); }
+    .btn-ghost{
+      font-weight:600; border-radius:12px; padding:.8rem 1rem;
+      background: transparent; border:1px solid rgba(255,255,255,.55);
+      color: var(--text-inv);
+    }
+    @media (prefers-color-scheme: light){
+      .btn-ghost{ color:#0f172a; border-color: rgba(15,23,42,.25); }
+    }
+    .inat-favicon{
+      background-image: url('https://www.inaturalist.org/favicon.ico');
+      background-repeat: no-repeat; background-position: 14px center; background-size: 20px 20px;
+      padding-left: 42px;
+    }
+
+    .why{ text-align:left; margin-top:16px; color: rgba(255,255,255,.9); }
+    @media (prefers-color-scheme: light){ .why{ color:#374151; } }
+    .why li{ margin:.25rem 0; }
+
+    /* Learn more scroll cue - simplified positioning */
+    .scroll-hint{
+      display:inline-flex; 
+      align-items:center; 
+      gap:.5rem;
+      padding:.55rem .9rem; 
+      border-radius:999px;
+      font-weight:700; 
+      font-size: clamp(1rem, 1.8vw, 1.15rem);
+      background: rgba(255,255,255,.88); 
+      color:#0f172a;
+      border:1px solid rgba(15,23,42,.15);
+      text-decoration:none; 
+      box-shadow:0 6px 18px rgba(0,0,0,.18);
+      margin: 1rem auto; /* Simple margin for spacing */
+      display: inline-flex; /* Ensure it's inline */
+    }
+    .scroll-hint:hover{ background:#fff; }
+    .scroll-hint .bi{ animation: bounce 1.3s infinite; }
+    @keyframes bounce{ 0%,100%{ transform: translateY(0); } 50%{ transform: translateY(4px); } }
+    @media (prefers-color-scheme: dark){
+      .scroll-hint{
+        background: rgba(23,26,27,.92); color:#f8fafc;
+        border-color: rgba(255,255,255,.12);
+      }
+    }
+
+    /* Features */
+    .features{
+      position: relative; z-index: 1;
+      padding: 40px clamp(16px, 4vw, 40px) 70px;
+      background: linear-gradient(to bottom, rgba(0,0,0,.0), rgba(0,0,0,.35));
+    }
+    @media (prefers-color-scheme: light){
+      .features{ background: linear-gradient(to bottom, rgba(255,255,255,.0), rgba(255,255,255,.75)); }
+    }
+    .feature-card{
+      border-radius: 14px; overflow: hidden; border: 1px solid rgba(255,255,255,.18);
+      background: rgba(255,255,255,.7);
+      transition: transform .2s ease, box-shadow .2s ease;
+    }
+    @media (prefers-color-scheme: dark){
+      .feature-card{ background: rgba(23,26,27,.7); border-color: rgba(255,255,255,.06); }
+    }
+    .feature-card:hover{ transform: translateY(-3px); box-shadow:0 10px 30px rgba(0,0,0,.15); }
+    .feature-img{
+      width:100%; height: 220px; object-fit: cover; display:block;
+      background:#0b1512;
+    }
+
+    footer{ color: rgba(255,255,255,.8); padding: 18px; text-align:center; }
+    @media (prefers-color-scheme: light){ footer{ color:#334155; } }
+
+    @media (prefers-reduced-motion: reduce){ .bg-video{ display:none !important; } }
+  </style>
+</head>
+<body>
+
+  <!-- Background -->
+  <div class="bg-video-wrap" aria-hidden="true">
+    <video id="bgVideo" class="bg-video" playsinline muted loop autoplay preload="metadata" poster="/assets/ferns-poster.jpg">
+      <source src="/assets/5049502-hd_1920_1080_24fps.mp4" type="video/mp4">
+    </video>
+  </div>
+  <div class="bg-scrim" aria-hidden="true"></div>
+
+  <!-- Hero -->
+  <main class="hero">
+    <div class="hero-card text-center text-light">
+      <span class="brand-badge">
+        <i class="bi bi-tree"></i> iNaturalist Taxa Trees
+      </span>
+      <h1 class="display-5">Visualize, compare, map, and track your biodiversity</h1>
+      <p class="lead">
+        Build taxonomic trees from your iNaturalist observations, compare two users side-by-side, explore region checklists with interactive maps to find species you haven't recorded yet, and replay your first-seen timeline.
+      </p>
+
+      <!-- Learn More button now properly below the intro text -->
+      <div>
+        <a href="#features" class="scroll-hint" aria-label="Learn more">
+          <span>Learn more</span> <i class="bi bi-chevron-double-down"></i>
+        </a>
+      </div>
+
+      <div class="cta">
+        <!-- Primary: Enter (public API, no auth required) -->
+        <a id="enterAppPrimary" href="https://inat-trees-dev.replit.app/index.html?mode=public" class="btn btn-inat">
+          <i class="bi bi-arrow-right-circle"></i> Enter
+        </a>
+        <!-- Secondary: optional sign-in -->
+        <button id="inatLogin" class="btn btn-ghost">
+          <span class="inat-favicon" aria-hidden="true"></span>
+          Sign in with iNaturalist (optional)
+        </button>
+      </div>
+    </div>
+  </main>
+
+  <!-- Features -->
+  <section class="features" id="features">
+    <div class="container">
+      <div class="row g-3">
+        <!-- LEFT: battle_img.jpg -->
+        <div class="col-12 col-md-4">
+          <div class="feature-card h-100">
+            <img class="feature-img"
+                 src="/assets/battle_img.jpg?v=1"
+                 alt="Screenshot: Build your taxonomic tree"
+                 loading="lazy"
+                 decoding="async"
+                 onerror="this.onerror=null; this.src='/assets/ferns-poster.jpg';">
+            <div class="p-3">
+              <h5 class="mb-1">Build your tree</h5>
+              <p class="mb-0">Pick a high-rank taxon (e.g., Plants, Birds) and we map your observations into a browsable tree.</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- MIDDLE: battle_stats.jpg -->
+        <div class="col-12 col-md-4">
+          <div class="feature-card h-100">
+            <img class="feature-img"
+                 src="/assets/battle_stats.jpg?v=1"
+                 alt="Screenshot: Compare two users (Tree PVP)"
+                 loading="lazy"
+                 decoding="async"
+                 onerror="this.onerror=null; this.src='/assets/ferns-poster.jpg';">
+            <div class="p-3">
+              <h5 class="mb-1">Compare users</h5>
+              <p class="mb-0">Red vs Blue, with purple for shared taxa. Battle animations included ✨</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- RIGHT: timeline_gif.gif -->
+        <div class="col-12 col-md-4">
+          <div class="feature-card h-100">
+            <img class="feature-img"
+                 src="/assets/timeline_gif.gif?v=1"
+                 alt="Screenshot: Checkpoints & first-seen timeline"
+                 loading="lazy"
+                 decoding="async"
+                 onerror="this.onerror=null; this.src='/assets/ferns-poster.jpg';">
+            <div class="p-3">
+              <h5 class="mb-1">Checkpoints & timeline</h5>
+              <p class="mb-0">Save snapshots, replay your first-seen species over time, and compare growth.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="text-center mt-4">
+        <a id="enterAppBottom" href="https://inat-trees-dev.replit.app/index.html?mode=public" class="btn btn-outline-light">
+          <i class="bi bi-arrow-right"></i> Enter
+        </a>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    <small>Built for naturalists. Public mode uses only public iNaturalist data; sign in (optional) enables private features.</small>
+  </footer>
+
+  <!-- Scripts -->
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js" defer></script>
+  <script>
+    window.CF_API_BASE = 'https://inat-trees-worker.intrinsic3141.workers.dev';
+    // Optional: reflect public mode here too if you want
+    // window.PUBLIC_MODE = true;
+  </script>
+  <script type="module" src="/ui-auth.js"></script>
+  <script type="module">
+    // Make "Enter" sticky: remember public mode locally so future visits skip landing
+    const tagPublic = () => { try { localStorage.setItem('PUBLIC_MODE','1'); } catch {} };
+    document.addEventListener('DOMContentLoaded', () => {
+      document.getElementById('enterAppPrimary')?.addEventListener('click', tagPublic);
+      document.getElementById('enterAppBottom')?.addEventListener('click', tagPublic);
+    });
+
+    import { fetchCurrentUser } from '/auth.js';
+
+    async function syncAuthUI(){
+      // Public mode: always show Enter buttons; sign-in remains optional
+      document.getElementById('enterAppBottom')?.classList.remove('d-none');
+      // If you keep a secondary #enterApp elsewhere, ensure it's visible too:
+      document.getElementById('enterApp')?.classList.remove('d-none');
+      // Optionally, still resolve the current user if a token exists (no UI gating)
+      if (!localStorage.getItem('inat_username') && localStorage.getItem('inat_token')) {
+        try { await fetchCurrentUser(); } catch {}
+      }
+    }
+
+    function maybeDisableVideo(){
+      const v = document.getElementById('bgVideo');
+      if (!v) return;
+      const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      const saveData = navigator.connection && navigator.connection.saveData;
+      if (reduce || saveData){ v.pause(); v.removeAttribute('autoplay'); v.style.display = 'none'; }
+      else { v.play().catch(()=>{}); }
+    }
+
+    document.addEventListener('DOMContentLoaded', () => { syncAuthUI(); maybeDisableVideo(); });
+    window.addEventListener('storage', (e) => {
+      if (e.key === 'inat_token' || e.key === 'inat_username') syncAuthUI();
+    });
+  </script>
+
+  <noscript>
+    <div class="container py-3">
+      <div class="alert alert-warning mt-3">
+        JavaScript is required to authenticate with iNaturalist and use the app.
+      </div>
+    </div>
+  </noscript>
+</body>
+</html>

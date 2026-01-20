@@ -1,0 +1,5 @@
+[33m312e623[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mopus-1-replit[m[33m, [m[1;31morigin/dev[m[33m)[m added favicons
+[33mac8341a[m[33m ([m[1;32mdev[m[33m)[m adding favicon
+[33mce5f36b[m added .png, .svg, .webmanifest to .gitignore
+[33m7b7caba[m fixing html export
+[33md4ac953[m removed pic links from html export

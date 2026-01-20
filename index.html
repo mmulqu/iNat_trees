@@ -1,0 +1,1440 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
+  <link rel="icon" href="/assets/favicon-32.png" sizes="32x32">
+  <link rel="apple-touch-icon" href="/assets/apple-touch-icon.png" sizes="180x180">
+  <link rel="manifest" href="/assets/site.webmanifest">
+  <meta name="theme-color" content="#3fac8c">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>iNaturalist Taxonomic Tree Viewer</title>
+  <script>
+    // Enable public mode in dev (no login needed). You can remove this
+    // in prod and rely on the query/localStorage flags instead.
+    window.PUBLIC_MODE = true;
+  </script>
+  <script>
+    (function () {
+      try {
+        const params = new URLSearchParams(window.location.search);
+        const qMode = (params.get('mode') || '').toLowerCase();
+        const publicMode =
+          qMode === 'public' ||
+          params.has('noLanding') ||
+          localStorage.getItem('PUBLIC_MODE') === '1' ||
+          (window.PUBLIC_MODE === true);
+        // If URL explicitly sets public mode, persist it for next visits
+        if (qMode === 'public') {
+          try { localStorage.setItem('PUBLIC_MODE', '1'); } catch {}
+        }
+        // Only bounce to landing if NOT public mode and NOT logged in
+        if (!publicMode && !localStorage.getItem('inat_token')) {
+          window.location.replace('landing.html');
+        }
+      } catch (e) {}
+    })();
+  </script>
+  <!-- Bootstrap CSS -->
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css" rel="stylesheet">
+  <link rel="stylesheet" href="battle-animation.css">
+  <!-- Supabase client removed; using fetch to Worker APIs -->
+  <!-- Load Markmap libraries -->
+  <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
+  <script src="https://cdn.jsdelivr.net/npm/markmap-view"></script>
+  <script src="https://cdn.jsdelivr.net/npm/markmap-lib"></script>
+  <style>
+    :root {
+      --primary-color: #3fac8c;
+      --secondary-color: #2d7d64;
+      --background-color: #f8faf9;
+      --text-color: #333;
+      --border-color: #dee2e6;
+    }
+
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      line-height: 1.6;
+      color: var(--text-color);
+      background-color: var(--background-color);
+      padding-bottom: 2rem;
+    }
+
+    /* Dark theme overrides via CSS variables */
+    body.dark-theme {
+      --primary-color: #3fac8c;
+      --secondary-color: #2a6e58;
+      --background-color: #151718;
+      --text-color: #e6e6e6;
+      --border-color: #2a2d2f;
+    }
+
+    /* Component overrides in dark theme */
+    body.dark-theme .card {
+      background-color: #1d1f20;
+      border-color: var(--border-color);
+      color: var(--text-color);
+    }
+    body.dark-theme .card-header {
+      background-color: var(--secondary-color);
+      color: #f2f2f2;
+    }
+    body.dark-theme .accordion-button {
+      background-color: #1d1f20;
+      color: var(--text-color);
+      border-color: var(--border-color);
+    }
+    body.dark-theme .accordion-body {
+      background-color: #1b1d1e;
+      color: var(--text-color);
+    }
+    body.dark-theme pre,
+    body.dark-theme .bg-light,
+    body.dark-theme .tree-info,
+    body.dark-theme .helpful-tips {
+      background-color: #202324 !important;
+      color: var(--text-color) !important;
+      border-color: var(--border-color) !important;
+    }
+    body.dark-theme input,
+    body.dark-theme select,
+    body.dark-theme .form-control,
+    body.dark-theme .dropdown-menu {
+      background-color: #1d1f20;
+      color: var(--text-color);
+      border-color: var(--border-color);
+    }
+    body.dark-theme .dropdown-item { color: var(--text-color); }
+    body.dark-theme .dropdown-item.selected { background-color: #26312e; }
+
+    /* Markmap dark styling */
+    body.dark-theme .markmap-container svg { background-color: #1d1f20; }
+    /* Force bright labels for both text and html label modes */
+    body.dark-theme .markmap-container svg text,
+    body.dark-theme .markmap-container svg tspan,
+    body.dark-theme .markmap-container svg .markmap-node text { fill: #f8fafc !important; opacity: 0.96 !important; }
+    body.dark-theme .markmap-container .markmap-foreign *:not(.user1-node):not(.user2-node):not(.shared-node) { color: #f8fafc !important; }
+
+    /* Explicit light-mode markmap text so it never ends up white on white */
+    body:not(.dark-theme) .markmap-container svg text,
+    body:not(.dark-theme) .markmap-container svg tspan,
+    body:not(.dark-theme) .markmap-container svg .markmap-node text { fill: #111827 !important; opacity: 1 !important; }
+    body:not(.dark-theme) .markmap-container .markmap-foreign *:not(.user1-node):not(.user2-node):not(.shared-node) { color: #111827 !important; }
+
+    /* Default link strokes */
+    .markmap-container svg path { stroke: #9aa1a7; }                 /* light */
+    body.dark-theme .markmap-container svg path { stroke: #6f918a; } /* dark */
+
+    /* PVP edges (win in both themes) */
+    .markmap-container svg path.user1-edge { stroke: #ff6b6b !important; }
+    .markmap-container svg path.user2-edge { stroke: #4dabf7 !important; }
+    .markmap-container svg path.shared-edge { stroke: #cc5de8 !important; }
+
+    /* PVP label colors (apply to spans, anchors, and any descendants) */
+    .user1-node, .user1-node a, .user1-node * { color: #ff6b6b !important; }
+    .user2-node, .user2-node a, .user2-node * { color: #4dabf7 !important; }
+    .shared-node, .shared-node a, .shared-node * { color: #cc5de8 !important; }
+
+    .navbar {
+      background-color: var(--primary-color);
+    }
+
+    /* Always show iNaturalist favicon on the auth button via CSS */
+    .inat-favicon {
+      background-image: url('https://www.inaturalist.org/favicon.ico');
+      background-repeat: no-repeat;
+      background-position: 12px center;
+      padding-left: 34px;
+      background-size: 18px 18px;
+    }
+
+    .navbar-brand {
+      font-weight: bold;
+      color: white !important;
+    }
+
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 1rem;
+    }
+
+    .card {
+      border-radius: 10px;
+      box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+      margin-bottom: 2rem;
+      border: 1px solid var(--border-color);
+    }
+
+    .card-header {
+      background-color: var(--primary-color);
+      color: white;
+      border-radius: 10px 10px 0 0 !important;
+      font-weight: bold;
+    }
+
+    input, select {
+      border-radius: 5px;
+      border: 1px solid var(--border-color);
+      padding: 8px 12px;
+      width: 100%;
+      margin-bottom: 1rem;
+    }
+
+    button {
+      background-color: var(--primary-color);
+      color: white;
+      border: none;
+      border-radius: 5px;
+      padding: 10px 20px;
+      cursor: pointer;
+      transition: background-color 0.3s;
+      font-weight: bold;
+    }
+
+    button:hover {
+      background-color: var(--secondary-color);
+    }
+
+    #markdownResult {
+      background-color: #f5f5f5;
+      border-radius: 5px;
+      padding: 1rem;
+      font-family: monospace;
+      max-height: 300px;
+      overflow: auto;
+    }
+
+    #markmap {
+      width: 100%;
+      height: 700px;
+      border: 1px solid var(--border-color);
+      border-radius: 5px;
+    }
+
+    /* Loading spinner */
+    .spinner-container {
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      margin: 2rem 0;
+    }
+
+    .spinner {
+      border: 4px solid rgba(0, 0, 0, 0.1);
+      border-left-color: var(--primary-color);
+      border-radius: 50%;
+      width: 40px;
+      height: 40px;
+      animation: spin 1s linear infinite;
+      margin-bottom: 1rem;
+    }
+
+    .spinner-text {
+      text-align: center;
+      font-style: italic;
+      color: var(--secondary-color);
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    .info-text {
+      font-size: 0.9rem;
+      margin-top: 0.5rem;
+      color: #6c757d;
+    }
+
+    .helpful-tips {
+      background-color: #e9f7f2;
+      border-left: 4px solid var(--primary-color);
+      padding: 1rem;
+      margin: 1rem 0;
+      border-radius: 0 5px 5px 0;
+    }
+
+    /* Custom toggle switch */
+    .toggle-container {
+      margin-bottom: 20px;
+    }
+
+    .search-option {
+      margin-bottom: 15px;
+      display: none;
+    }
+
+    .search-option.active {
+      display: block;
+    }
+
+    /* Autocomplete styles for checklist */
+    .autocomplete-results {
+      position: absolute;
+      top: 100%;
+      left: 0;
+      right: 0;
+      background: white;
+      border: 1px solid #ccc;
+      border-top: none;
+      max-height: 200px;
+      overflow-y: auto;
+      z-index: 1000;
+      display: none;
+    }
+
+    .autocomplete-item {
+      padding: 8px 12px;
+      cursor: pointer;
+      border-bottom: 1px solid #eee;
+    }
+
+    .autocomplete-item:hover {
+      background-color: #f5f5f5;
+    }
+
+    .autocomplete-item:last-child {
+      border-bottom: none;
+    }
+
+    body.dark-theme .autocomplete-results {
+      background: #2a2d2f;
+      border-color: #444;
+    }
+
+    body.dark-theme .autocomplete-item {
+      color: #e6e6e6;
+      border-bottom-color: #444;
+    }
+
+    body.dark-theme .autocomplete-item:hover {
+      background-color: #3a3d3f;
+    }
+
+    .scientific-name {
+      font-style: italic;
+      color: #666;
+    }
+
+    .taxon-id {
+      color: #999;
+      font-size: 0.9em;
+    }
+
+    body.dark-theme .scientific-name {
+      color: #aaa;
+    }
+
+    body.dark-theme .taxon-id {
+      color: #777;
+    }
+
+    .autocomplete-container {
+      position: relative;
+    }
+
+    .autocomplete-results {
+      position: absolute;
+      z-index: 1000;
+      background-color: white;
+      width: 100%;
+      max-height: 200px;
+      overflow-y: auto;
+      border: 1px solid var(--border-color);
+      border-radius: 0 0 5px 5px;
+      box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+      display: none;
+    }
+
+    .autocomplete-item {
+      padding: 8px 12px;
+      cursor: pointer;
+      border-bottom: 1px solid #f0f0f0;
+    }
+
+    .autocomplete-item:hover {
+      background-color: #f5f5f5;
+    }
+
+    .autocomplete-item .scientific-name {
+      font-style: italic;
+      color: #666;
+      font-size: 0.9em;
+    }
+
+    .autocomplete-item .taxon-id {
+      color: #999;
+      font-size: 0.8em;
+      float: right;
+    }
+    /* Dark mode for autocomplete */
+    body.dark-theme .autocomplete-results {
+      background-color: #1d1f20;
+      color: var(--text-color);
+      border-color: var(--border-color);
+      box-shadow: 0 4px 6px rgba(0, 0, 0, 0.6);
+    }
+    body.dark-theme .autocomplete-item { border-bottom: 1px solid #2a2d2f; }
+    body.dark-theme .autocomplete-item:hover { background-color: #222628; }
+    body.dark-theme .autocomplete-item .scientific-name { color: #cfcfcf; }
+    body.dark-theme .autocomplete-item .taxon-id { color: #a0a0a0; }
+
+    /* Brighter small labels for dark mode */
+    body.dark-theme small, body.dark-theme .text-muted { color: #d0d6d8 !important; }
+
+    /* Dropdown menu for autocomplete results */
+    .dropdown-menu {
+      width: 100%;
+      max-height: 300px;
+      overflow-y: auto;
+    }
+
+    .dropdown-item.selected {
+      background-color: #e9f7f2;
+    }
+
+    /* Visual indicator when a taxon is selected */
+    .is-valid {
+      border-color: var(--primary-color) !important;
+      background-color: rgba(63, 172, 140, 0.1) !important;
+    }
+
+    /* Fix for markmap rendering */
+    .markmap-container {
+      min-height: 700px;
+      width: 100%;
+      display: block;
+    }
+
+    .tab-pane {
+      transition: opacity 0.3s ease-in-out;
+    }
+
+    #resultsCard {
+      position: relative;
+      z-index: 100;
+    }
+
+    /* Make the results card go edge-to-edge without refactoring containers */
+    #resultsCard {
+      margin-left: calc(50% - 50vw);
+      width: 100vw;
+      border-radius: 0;
+    }
+
+
+    /* When in Fullscreen, let the canvas own the screen */
+    :fullscreen .markmap-container { height: 100dvh; }
+
+    /* Place toolbars over the canvas */
+    .tab-pane { position: relative; }
+    .mm-toolbar {
+      position: absolute; top: .5rem; right: .5rem; z-index: 5;
+      display: flex; gap: .5rem; align-items: center;
+    }
+    .mm-toolbar .form-select, .mm-toolbar .btn { padding: .25rem .5rem; }
+
+    /* Only show Explore's global results on Explore */
+    body:not(.in-home) #resultsCard { display: none !important; }
+
+    /* Existing rules stay */
+    body.in-pvp #resultsCard { display: none !important; }
+    body:not(.in-pvp) #pvpResultsCard { display: none !important; }
+
+    /* Lifelist switch with inline text */
+    .lifelist-switch .form-check-input.lifelist-toggle {
+      width: 12em;  /* wider toggle */
+      height: 2.25rem;
+      cursor: pointer;
+      position: relative;
+      background-color: #d1e7dd;
+      border-color: var(--border-color);
+    }
+    body.dark-theme .lifelist-switch .form-check-input.lifelist-toggle {
+      background-color: #22423a;
+      border-color: #35504a;
+    }
+
+    .lifelist-switch .form-check-input.lifelist-toggle::after {
+      content: attr(data-off);
+      position: absolute;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      font-weight: 700;
+      color: #0f5132; /* green-ish text for "Regional" */
+    }
+    body.dark-theme .lifelist-switch .form-check-input.lifelist-toggle::after {
+      color: #c4f1dd;
+    }
+
+    /* When checked, show Global */
+    .lifelist-switch .form-check-input.lifelist-toggle:checked::after {
+      content: attr(data-on);
+      color: white;
+    }
+
+    /* Make the knob subtle so text stays readable */
+    .lifelist-switch .form-check-input.lifelist-toggle:focus { box-shadow: none; }
+
+    /* Map title (top-left) — smaller, two-line, narrower */
+    .leaflet-control.map-title{
+      background: rgba(17,24,39,.92);
+      color:#fff;
+      border-radius:10px;
+      padding:.4rem .6rem;
+      line-height:1.25;
+      box-shadow:0 2px 8px rgba(0,0,0,.2);
+      max-width: 260px;           /* narrower */
+    }
+    body:not(.dark-theme) .leaflet-control.map-title{
+      background: rgba(248,250,249,.96);
+      color:#111827;
+    }
+    .map-title .mt-line1{ font-weight:600; font-size:.9rem; }
+    .map-title .mt-line2{ font-weight:700; font-size:.9rem; }
+
+    /* Gray legend: smaller box, no hint line, no circular pills */
+    .leaflet-control.missing-legend{
+      background: rgba(248,250,249,.95);
+      color:#111827;
+      border-radius:10px;
+      padding:.4rem;              /* slightly tighter */
+      box-shadow:0 2px 8px rgba(0,0,0,.2);
+      max-height: 38vh;
+      overflow:auto;
+      min-width: 210px;
+    }
+    body.dark-theme .leaflet-control.missing-legend{
+      background: rgba(29,31,32,.92);
+      color:#e6e6e6;
+    }
+    .missing-legend .legend-title{ font-weight:700; font-size:.9rem; margin-bottom:.25rem; }
+    .missing-legend .legend-item{
+      display:flex; align-items:center; gap:.4rem;
+      padding:.2rem .2rem; border-radius:8px;
+    }
+    .missing-legend .legend-item:hover{
+      background:rgba(0,0,0,.06);
+    }
+    body.dark-theme .missing-legend .legend-item:hover{
+      background:rgba(255,255,255,.06);
+    }
+    .missing-legend .swatch{ width:12px; height:12px; border-radius:3px; box-shadow: inset 0 0 0 1px rgba(0,0,0,.25); }
+    .missing-legend .name{ flex:1; min-width:0; font-size:.85rem; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+
+    /* simple inline checkboxes (no circular "pills") */
+    .missing-legend label.tog{
+      display:inline-flex; align-items:center; gap:.3rem; font-size:.8rem;
+      margin: 0 .2rem;
+    }
+
+    /* remove the old pill styling if it exists */
+    .missing-legend .pill, .missing-legend .pill.on { border:none; background:transparent; padding:0; }
+
+    .missing-legend .legend-remove{
+      background:transparent; border:none; color:inherit; font-weight:700; line-height:1;
+      width:1.25rem; height:1.25rem; border-radius:999px; cursor:pointer; opacity:.75;
+    }
+    .missing-legend .legend-remove:hover{ opacity:1; }
+
+    /* Make Leaflet's container fill the screen when toggled */
+    .leaflet-container.is-fullscreen{
+      position: fixed !important;
+      inset: 0 !important;           /* top:0; right:0; bottom:0; left:0 */
+      width: 100vw !important;
+      height: 100vh !important;
+      z-index: 1000 !important;
+      border-radius: 0 !important;
+    }
+
+    /* Optional: compact the title a hair so it sits neatly above zoom */
+    .leaflet-control.map-title{ margin-bottom: .25rem; }
+
+    /* Remove SVG export options from the Markmap toolbar */
+    .mm-toolbar [data-act="export-svg"],
+    .mm-toolbar [data-act="copy-svg"],
+    .mm-toolbar .dropdown-item[data-act="export-svg"],
+    .mm-toolbar .dropdown-item[data-act="copy-svg"] {
+      display: none !important;
+    }
+
+    /* Fallback: hide any actions whose data-act contains "svg" */
+    .mm-toolbar [data-act*="svg"],
+    .mm-toolbar .dropdown-item[data-act*="svg"] { 
+      display: none !important; 
+    }
+  </style>
+</head>
+<body>
+  <button id="inatLogin" class="btn btn-success inat-favicon">
+    <img src="https://www.inaturalist.org/favicon.ico" style="width:18px;margin-right:6px">
+    Connect my iNaturalist account
+  </button>
+  <button id="inatLogout" class="btn btn-sm btn-link d-none">Disconnect</button>
+  <div id="authStatus"></div>
+  <nav class="navbar navbar-expand-lg navbar-dark mb-4">
+    <div class="container">
+      <a class="navbar-brand" href="#">iNaturalist Taxonomic Tree Viewer</a>
+      <ul class="navbar-nav ms-auto">
+        <li class="nav-item"><a class="nav-link active" id="home-tab" href="#" onclick="showTab('home')">Explore</a></li>
+        <li class="nav-item"><a class="nav-link" id="pvpPane-tab" href="#" onclick="showTab('pvpPane')">PvP</a></li>
+        <li class="nav-item"><a class="nav-link" id="checkpoints-tab" href="#" onclick="showTab('checkpointsPane')">Timelines</a></li>
+        <li class="nav-item"><a class="nav-link" id="checklistPane-tab" href="#" onclick="showTab('checklistPane')">Checklists</a></li>
+        <li class="nav-item ms-3">
+          <button id="themeToggle" class="btn btn-sm btn-outline-light" title="Toggle light/dark mode">
+            <i id="themeIcon" class="bi bi-moon"></i>
+          </button>
+        </li>
+      </ul>
+    </div>
+  </nav>
+
+  <div class="container">
+    <!-- Explore pane -->
+    <div id="home" class="tab-pane main-pane" style="display:block;">
+        <div class="card">
+          <div class="card-header">Build Your Taxonomic Tree</div>
+          <div class="card-body">
+            <form id="treeForm">
+              <div class="row mb-3">
+                <div class="col-md-12">
+                  <label for="username" class="form-label">iNaturalist Username:</label>
+                  <input type="text" id="username" name="username" required class="form-control" placeholder="Enter iNaturalist username">
+                  <p class="info-text">Enter the username of the iNaturalist user whose observations you want to analyze.</p>
+                </div>
+              </div>
+
+              <!-- Date range filter (Observed date) -->
+              <div class="row g-2 align-items-end mb-3">
+                <div class="col-auto">
+                  <label for="obsStart" class="form-label mb-0 small">Observed from</label>
+                  <input type="date" class="form-control form-control-sm" id="obsStart" placeholder="YYYY-MM-DD">
+                </div>
+                <div class="col-auto">
+                  <label for="obsEnd" class="form-label mb-0 small">to</label>
+                  <input type="date" class="form-control form-control-sm" id="obsEnd" placeholder="YYYY-MM-DD">
+                </div>
+              </div>
+
+              <div class="toggle-container mb-4">
+                <label class="form-label">Search by:</label>
+                <div class="btn-group w-100" role="group">
+                  <input type="radio" class="btn-check" name="searchType" id="searchName" autocomplete="off" checked>
+                  <label class="btn btn-outline-primary" for="searchName">Name (Common or Scientific)</label>
+
+                  <input type="radio" class="btn-check" name="searchType" id="searchId" autocomplete="off">
+                  <label class="btn btn-outline-primary" for="searchId">Taxon ID</label>
+                </div>
+              </div>
+
+              <div id="nameSearch" class="search-option active">
+                <label for="taxonName" class="form-label">Taxon Name:</label>
+                <div class="autocomplete-container">
+                  <input type="text" id="taxonName" name="taxonName" class="form-control" placeholder="Start typing common or scientific name...">
+                  <div id="autocompleteResults" class="autocomplete-results"></div>
+                  <input type="hidden" id="selectedTaxonId" name="selectedTaxonId">
+                </div>
+                <p class="info-text">Enter any part of a common or scientific name and select from the suggestions. <span class="text-primary">Note: Only genus level or higher taxonomic ranks can be used to build trees.</span></p>
+              </div>
+
+              <div id="idSearch" class="search-option">
+                <label for="taxonId" class="form-label">Taxon ID:</label>
+                <input type="number" id="taxonId" name="taxonId" class="form-control" placeholder="e.g., 47115 for Mollusca">
+                <p class="info-text">Enter the taxon ID for the taxonomic group you want to view.</p>
+              </div>
+
+              <div class="helpful-tips">
+                <h5>Helpful Tips</h5>
+              
+                <p class="mb-0"><strong>Find taxon IDs</strong> in the iNaturalist URL (e.g., https://www.inaturalist.org/taxa/47115-Mollusca).</p>
+                <p class="mt-1 mb-0"><strong>Common groups:</strong> New World Warblers (71349), Hymenoptera (47201), Beeches, Oaks, Walnuts, and Allies (47853).</p>
+              </div>
+              
+
+              <button type="submit" class="btn btn-primary">Build Tree</button>
+            </form>
+
+            <div class="spinner-container" id="loadingSpinner">
+              <div class="spinner"></div>
+              <div class="spinner-text" id="loadingText">Building your phylogenetic tree...</div>
+            </div>
+          </div>
+        </div>
+
+  </div>
+
+  <!-- PvP (Compare Users) pane -->
+  <div id="pvpPane" class="tab-pane main-pane" style="display:none;">
+
+    <!-- Compare Users -->
+    <div class="card mt-4">
+      <div class="card-header">Tree PVP Mode: Compare Two Users</div>
+      <div class="card-body">
+        <form id="compareForm">
+          <div class="row mb-3">
+            <div class="col-md-6">
+              <label for="username1" class="form-label">First iNaturalist Username:</label>
+              <input type="text" id="username1" name="username1" required class="form-control" placeholder="Enter first username">
+              <div class="d-flex align-items-center mt-1">
+                <div class="color-indicator me-2" style="width: 20px; height: 20px; background-color: #ff6b6b; border-radius: 4px;"></div>
+                <p class="info-text mb-0">User 1's unique observations</p>
+              </div>
+            </div>
+            <div class="col-md-6">
+              <label for="username2" class="form-label">Second iNaturalist Username:</label>
+              <input type="text" id="username2" name="username2" required class="form-control" placeholder="Enter second username">
+              <div class="d-flex align-items-center mt-1">
+                <div class="color-indicator me-2" style="width: 20px; height: 20px; background-color: #4dabf7; border-radius: 4px;"></div>
+                <p class="info-text mb-0">User 2's unique observations</p>
+              </div>
+            </div>
+          </div>
+
+          <!-- Date range filter for Compare (Observed date) -->
+          <div class="row g-2 align-items-end mb-3">
+            <div class="col-auto">
+              <label for="obsStartCompare" class="form-label mb-0 small">Observed from</label>
+              <input type="date" class="form-control form-control-sm" id="obsStartCompare" placeholder="YYYY-MM-DD">
+            </div>
+            <div class="col-auto">
+              <label for="obsEndCompare" class="form-label mb-0 small">to</label>
+              <input type="date" class="form-control form-control-sm" id="obsEndCompare" placeholder="YYYY-MM-DD">
+            </div>
+          </div>
+
+          <div class="d-flex align-items-center mb-3">
+            <div class="color-indicator me-2" style="width: 20px; height: 20px; background-color: #cc5de8; border-radius: 4px;"></div>
+            <p class="info-text mb-0">Shared observations (both users)</p>
+          </div>
+
+          <!-- Search type toggle -->
+          <div class="toggle-container mb-4">
+            <label class="form-label">Search by:</label>
+            <div class="btn-group w-100" role="group">
+              <input type="radio" class="btn-check" name="compareSearchType" id="compareSearchName" autocomplete="off" checked>
+              <label class="btn btn-outline-primary" for="compareSearchName">Name (Common or Scientific)</label>
+
+              <input type="radio" class="btn-check" name="compareSearchType" id="compareSearchId" autocomplete="off">
+              <label class="btn btn-outline-primary" for="compareSearchId">Taxon ID</label>
+            </div>
+          </div>
+
+          <!-- Search by name -->
+          <div id="compareNameSearch" class="search-option active">
+            <label for="compareTaxonName" class="form-label">Taxon Name:</label>
+            <div class="autocomplete-container">
+              <input type="text" id="compareTaxonName" name="compareTaxonName" class="form-control" placeholder="Start typing common or scientific name...">
+              <div id="compareAutocompleteResults" class="autocomplete-results" style="display:none;"></div>
+              <input type="hidden" id="compareSelectedTaxonId" name="compareSelectedTaxonId">
+            </div>
+            <p class="info-text">Pick a suggestion to lock in the ID.</p>
+          </div>
+
+          <!-- Search by ID -->
+          <div id="compareIdSearch" class="search-option">
+            <label for="compareTaxonId" class="form-label">Taxon ID:</label>
+            <input type="number" id="compareTaxonId" name="compareTaxonId" class="form-control" placeholder="e.g., 47158 for Insecta">
+            <p class="info-text">Find taxon IDs in the iNaturalist URL (e.g., https://www.inaturalist.org/taxa/47115-Mollusca).</p>
+          </div>
+
+          <div class="d-flex gap-2">
+            <button type="submit" class="btn btn-primary">🔥 Battle!</button>
+          </div>
+        </form>
+
+        <!-- PvP loading spinner -->
+        <div class="spinner-container" id="compareLoadingSpinner" style="display:none;">
+          <div class="spinner"></div>
+          <div class="spinner-text" id="compareLoadingText">Building the battle map...</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- PvP Results (native; not a mirror) -->
+    <div class="card mt-4" id="pvpResultsCard" style="display:none;">
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <div>Markmap Visualization — PvP</div>
+        <div class="d-flex gap-2">
+          <button id="pvpDeleteAllTrees" class="btn btn-sm btn-outline-light">
+            <i class="bi bi-trash"></i> Clear All
+          </button>
+        </div>
+      </div>
+      <div class="card-body">
+        <!-- PvP tabs -->
+        <ul class="nav nav-tabs mb-3" id="pvpTreeTabs" role="tablist"></ul>
+        <div class="tab-content" id="pvpTreeTabContent"></div>
+
+        <!-- PvP Markdown -->
+        <div class="accordion mt-4" id="pvpMarkdownAccordion">
+          <div class="accordion-item">
+            <h2 class="accordion-header" id="pvpHeading">
+              <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#pvpCollapse" aria-expanded="false" aria-controls="pvpCollapse">
+                Show Generated Markdown
+              </button>
+            </h2>
+            <div id="pvpCollapse" class="accordion-collapse collapse" aria-labelledby="pvpHeading" data-bs-parent="#pvpMarkdownAccordion">
+              <div class="accordion-body">
+                <pre id="pvpMarkdownResult"></pre>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Checklists pane (fully separate) -->
+  <div id="checklistPane" class="tab-pane main-pane" style="display:none;">
+    <div class="card mt-4">
+      <div class="card-header">Region Checklist (Targets)</div>
+      <div class="card-body">
+        <form id="checklistForm">
+          <div class="row g-3 align-items-end">
+            <div class="col-md-4">
+              <label class="form-label">iNaturalist Username</label>
+              <input type="text" id="clUsername" class="form-control" placeholder="Enter iNaturalist username" required>
+            </div>
+            <div class="col-md-4">
+              <label class="form-label">Region</label>
+              <select id="clRegion" class="form-select" required>
+                <option value="">Loading regions...</option>
+              </select>
+            </div>
+            <div class="col-md-4">
+              <label class="form-label">Base taxon (name or ID)</label>
+              <div class="input-group autocomplete-container">
+                <input type="text" id="clTaxonName" class="form-control" placeholder="Start typing common or scientific name..." autocomplete="off">
+                <input type="hidden" id="clSelectedTaxonId">
+                <button class="btn btn-outline-secondary" type="button" id="clUseIdBtn" title="Use ID from box">ID</button>
+              </div>
+              <div id="clAutocomplete" class="autocomplete-results"></div>
+              <div class="form-text">Pick lower ranks (e.g., genera or families) for faster trees.</div>
+            </div>
+          </div>
+          <div class="col-md-4">
+            <label class="form-label d-block">Compare checklist against observations from:</label>
+            <div class="form-switch lifelist-switch d-flex align-items-center">
+              <span class="text-muted me-2" style="min-width: 100px; text-align: right;">This region only</span>
+              <input
+                class="form-check-input lifelist-toggle mx-2"
+                type="checkbox"
+                id="lifelistScope"
+                data-on="Global"
+                data-off="Regional"
+                checked
+              >
+              <span class="text-muted ms-2">Everywhere</span>
+            </div>
+          </div>
+          </div>
+          <div class="mt-3 d-flex gap-2">
+            <button type="submit" class="btn btn-primary">Build Checklist Tree</button>
+            <button type="button" class="btn btn-outline-secondary" id="clHydrateBtn" title="Populate missing taxa into DB">Hydrate Region</button>
+          </div>
+        </form>
+
+        <div class="spinner-container" id="clSpinner" style="display:none;">
+          <div class="spinner"></div>
+          <div class="spinner-text">Building targets tree…</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Checklists Results (own card & tabs) -->
+    <div class="card mt-4" id="clResultsCard" style="display:none;">
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <div>Markmap Visualization — Checklists</div>
+        <div class="d-flex gap-2">
+          <button id="clClearBtn" class="btn btn-sm btn-outline-light"><i class="bi bi-trash"></i> Clear</button>
+        </div>
+      </div>
+      <div class="card-body">
+        <ul class="nav nav-tabs mb-3" id="clTreeTabs" role="tablist"></ul>
+        <div class="tab-content" id="clTreeTabContent"></div>
+
+        <div class="accordion mt-4" id="clMarkdownAccordion">
+          <div class="accordion-item">
+            <h2 class="accordion-header" id="clMdHead">
+              <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#clMdCollapse" aria-expanded="false" aria-controls="clMdCollapse">
+                Show Generated Markdown
+              </button>
+            </h2>
+            <div id="clMdCollapse" class="accordion-collapse collapse" aria-labelledby="clMdHead" data-bs-parent="#clMarkdownAccordion">
+              <div class="accordion-body"><pre id="clMarkdownResult"></pre></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Saved Checkpoints / Timeline (separate pane) -->
+  <div class="card mt-4 tab-pane main-pane" id="checkpointsPane" style="display:none;">
+    <div class="card-header">📈 Saved Timelines</div>
+    <div class="card-body">
+      <div class="row">
+        <div class="col-md-4">
+          <h6>Your taxa</h6>
+          <div id="checkpointTaxaList" class="list-group"></div>
+        </div>
+        <div class="col-md-8">
+          <div class="d-flex justify-content-between align-items-center mb-2">
+            <h6 id="checkpointSelectedTitle" class="mb-0">Select a taxon to view timeline</h6>
+            <button id="requeryCompareBtn" class="btn btn-sm btn-primary" disabled>
+              <span class="spinner-border spinner-border-sm me-1 d-none" id="requerySpinner"></span>
+              Re-query & Compare
+            </button>
+          </div>
+          <input type="range" id="checkpointSlider" class="form-range" min="0" max="0" value="0" step="1" disabled>
+          <div id="checkpointTicks" class="d-flex justify-content-between mt-1"></div>
+          <div class="d-flex justify-content-between"><small id="checkpointStart"></small><small id="checkpointEnd"></small></div>
+          <div class="text-center mt-1"><small id="checkpointCurrent" class="text-primary"></small></div>
+          <div id="checkpointSummary" class="mt-3"></div>
+
+          <!-- Checkpoint Markmap Visualization (separate, self-contained) -->
+          <div class="card mt-4" id="cpResultsCard" style="display:none;">
+            <div class="card-header d-flex justify-content-between align-items-center">
+              <div>Markmap Visualization</div>
+              <div>
+                <button id="cpClearBtn" class="btn btn-sm btn-outline-light"><i class="bi bi-trash"></i> Clear</button>
+              </div>
+            </div>
+            <div class="card-body">
+              <div class="spinner-container" id="cpLoading" style="display:none;">
+                <div class="spinner"></div>
+                <div class="spinner-text" id="cpLoadingText">Building tree from saved checkpoint...</div>
+              </div>
+              <ul class="nav nav-tabs mb-3" id="cpTreeTabs" role="tablist"></ul>
+              <div class="tab-content" id="cpTreeTabContent"></div>
+              <div class="accordion mt-4" id="cpMarkdownAccordion">
+                <div class="accordion-item">
+                  <h2 class="accordion-header" id="cpHeadingOne">
+                    <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#cpCollapseOne" aria-expanded="false" aria-controls="cpCollapseOne">
+                      Show Generated Markdown
+                    </button>
+                  </h2>
+                  <div id="cpCollapseOne" class="accordion-collapse collapse" aria-labelledby="cpHeadingOne" data-bs-parent="#cpMarkdownAccordion">
+                    <div class="accordion-body">
+                      <pre id="cpMarkdownResult"></pre>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Results card (outside the tab content) -->
+  <div class="card" id="resultsCard" style="display: none;">
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <div>Markmap Visualization</div>
+      <div class="d-flex gap-2">
+        <button id="mmFullscreenBtn" class="btn btn-sm btn-outline-light" title="Fullscreen">
+          <i class="bi bi-arrows-fullscreen"></i>
+        </button>
+        <button id="saveCheckpointBtn" class="btn btn-sm btn-outline-light d-flex align-items-center gap-1" title="Save current tree as a checkpoint" disabled>
+          <span class="spinner-border spinner-border-sm d-none" id="saveCpSpinner"></span>
+          <i class="bi bi-bookmark"></i> Save checkpoint
+        </button>
+        <button id="deleteAllTrees" class="btn btn-sm btn-outline-light">
+          <i class="bi bi-trash"></i> Clear All
+        </button>
+      </div>
+    </div>
+
+    <div class="card-body">
+      <!-- Tabs navigation -->
+      <ul class="nav nav-tabs mb-3" id="treeTabs" role="tablist">
+        <!-- Tab headers will be dynamically inserted here -->
+      </ul>
+
+      <!-- Tab content container -->
+      <div class="tab-content" id="treeTabContent">
+        <!-- Tab panes will be dynamically inserted here -->
+      </div>
+
+      <div class="accordion mt-4" id="markdownAccordion">
+        <div class="accordion-item">
+          <h2 class="accordion-header" id="headingOne">
+            <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#collapseOne" aria-expanded="false" aria-controls="collapseOne">
+              Show Generated Markdown
+            </button>
+          </h2>
+          <div id="collapseOne" class="accordion-collapse collapse" aria-labelledby="headingOne" data-bs-parent="#markdownAccordion">
+            <div class="accordion-body">
+              <pre id="markdownResult"></pre>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Bootstrap JS Bundle with Popper -->
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/js/bootstrap.bundle.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <!-- Leaflet -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="tab-controller.js"></script>
+  <script src="TaxonomyStats.js"></script>
+  <script>window.CF_API_BASE = 'https://inat-trees-worker.intrinsic3141.workers.dev';</script>
+  
+  <!-- Cache MVP -->
+  <script type="module">
+    // ===== deps (no build step) =====
+    import { get, set, del, keys } from "https://cdn.jsdelivr.net/npm/idb-keyval@6/+esm";
+    import { gzip, ungzip } from "https://cdn.jsdelivr.net/npm/pako@2.1.0/dist/pako.esm.mjs";
+
+    // ===== config =====
+    const WORKER_URL = "https://inat-trees-worker.intrinsic3141.workers.dev";
+    const TTL = { firstObs: 30 * 24 * 3600 * 1000 }; // 30 days
+
+    // --- run-once & dedup guards ---
+    window.__bootRestoreDone ??= false;
+    window.__restoredKeys ??= new Set();
+
+    // ===== storage durability (best effort) =====
+    export async function initStorage() {
+      try {
+        const persisted = await navigator.storage.persisted();
+        if (!persisted) await navigator.storage.persist();
+      } catch {}
+    }
+
+    // ===== tiny helpers =====
+    const enc = (s) => gzip(new TextEncoder().encode(s));
+    const dec = (b) => new TextDecoder().decode(ungzip(b));
+    const treeKey  = (u,t,scope="global",region="") => `tree:v1:${u}:${t}:${scope}:${region}`;
+    const firstKey = (u,t) => `firstObs:v1:${u}:${t}`;
+
+    // ===== trees (compressed) =====
+    export async function cacheTree(key, treeObj, markdown) {
+      const payload = { t: Date.now(), tree: treeObj, md: markdown };
+      await set(key, enc(JSON.stringify(payload)));
+    }
+
+    export async function loadTree(key) {
+      const bin = await get(key);
+      if (!bin) return null;
+      return JSON.parse(dec(bin));
+    }
+
+    export async function loadTreeCached({ username, baseTaxonId, speciesTaxonIds, scope="global", region_code="", force=false }) {
+      const key = treeKey(username, baseTaxonId, scope, region_code);
+      if (!force) {
+        const cached = await loadTree(key);
+        if (cached) {
+          // ✅ normalize to the same shape as server response
+          return { markdown: cached.md || "", tree: cached.tree || null, _fromCache: true, _cachedAt: cached.t };
+        }
+      }
+      const r = await fetch(`${WORKER_URL}/tree-from-species`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ speciesTaxonIds, baseTaxonId, username })
+      });
+      const data = await r.json();
+      await cacheTree(key, data.tree || null, data.markdown || data.plainMarkdown || "");
+      return { markdown: data.markdown || data.plainMarkdown || "", tree: data.tree || null, _fromCache: false };
+    }
+
+    // ===== first-photo (30d TTL) =====
+    export async function getFirstObs(username, taxonId) {
+      const key = firstKey(username, taxonId);
+      const cached = await get(key);
+      if (cached && (Date.now() - cached.t) < TTL.firstObs) return cached.data;
+
+      const r = await fetch(`${WORKER_URL}/first-observation?username=${encodeURIComponent(username)}&taxon_id=${taxonId}`);
+      const data = await r.json();
+      await set(key, { t: Date.now(), data });
+      return data;
+    }
+
+    // ===== optional user cache tools =====
+    export async function clearUserCache(username) {
+      for (const k of await keys()) if (String(k).includes(`:${username}:`)) await del(k);
+    }
+
+    // ===== wire up UI chip clicks (🖼️) =====
+    document.addEventListener("click", async (e) => {
+      const a = e.target.closest(".first-obs-trigger");
+      if (!a) return;
+      e.preventDefault();
+      const info = await getFirstObs(a.dataset.username, Number(a.dataset.taxonId));
+      // TODO: show modal/tooltip with info.image_urls + info.obs_url + info.observed_on
+      console.log("first photo", info);
+    });
+
+    // ===== init + SW registration =====
+    await initStorage();
+    if ("serviceWorker" in navigator) {
+      // register whether sw.js is at / or alongside the page
+      navigator.serviceWorker.register(new URL('sw.js', location.href)).catch(()=>{});
+    }
+
+    // Make cache helpers globally callable
+    window.treeKey        = treeKey;
+    window.cacheTree      = cacheTree;
+    window.loadTree       = loadTree;
+    window.loadTreeCached = loadTreeCached;
+    window.getFirstObs    = getFirstObs;
+    window.clearUserCache = clearUserCache;
+
+    // expose per-tree delete helpers
+    window.deleteCachedTreeByKey = async function deleteCachedTreeByKey(key){
+      if (!key) return;
+      try {
+        await del(key);
+        console.log('[cache] deleted tree key:', key);
+      } catch (e) {
+        console.warn('[cache] delete failed for', key, e);
+      }
+    };
+
+    window.deleteCachedTree = async function deleteCachedTree({ username, baseTaxonId, scope='global', region='' } = {}){
+      const key = window.treeKey?.(username, baseTaxonId, scope, region);
+      return window.deleteCachedTreeByKey(key);
+    };
+
+    // Clear ALL saved trees from IDB
+    window.clearAllTreeCaches = async function clearAllTreeCaches() {
+      for (const k of await keys()) {
+        if (String(k).startsWith('tree:v1:')) await del(k);
+      }
+    };
+
+    // Restore saved Explore trees from IDB into the UI
+    window.restoreCachedTrees = async function restoreCachedTrees() {
+      try {
+        const ks = await keys();
+        let restored = 0;
+
+        // Ensure Explore tab is active so the results card isn't CSS-hidden
+        if (typeof window.showTab === 'function') window.showTab('home');
+        else document.body.classList.add('in-home');
+
+        for (const k of ks) {
+          const sk = String(k);
+          if (!sk.startsWith('tree:v1:')) continue;     // Explore-only keys
+
+          // Skip if we already restored this exact key during this session
+          if (window.__restoredKeys.has(sk)) continue;
+
+          // key: tree:v1:{username}:{taxonId}:{scope}:{region}
+          const parts   = sk.split(':');
+          const username = parts[2];
+          const taxonId  = Number(parts[3]);
+          const scope    = parts[4] || 'global';
+          const region   = parts[5] || '';
+
+          const bin = await get(k);
+          if (!bin) continue;
+
+          const payload = JSON.parse(dec(bin)); // { t, md, tree? }
+          const md = payload.md || payload.markdown || '';
+          if (!md) continue;
+
+          // Create the tab as usual
+          window.treeManager?.addTree(username, null, taxonId, md);
+
+          // Tag the newest tree with cache info so the ✖ can delete it from IDB
+          const tree = window.treeManager?.trees?.[window.treeManager.trees.length - 1];
+          if (tree) {
+            tree.scope = scope;
+            tree.region_code = region;
+            tree.cacheKey = sk;
+            const tabEl = document.getElementById(`${tree.id}-tab`);
+            if (tabEl) {
+              tabEl.dataset.cacheKey = sk;
+              console.log(`[restore] tagged tab ${tree.id} with cacheKey: ${sk}`);
+            }
+          }
+
+          // Remember we've hydrated this key
+          window.__restoredKeys.add(sk);
+          restored++;
+        }
+
+        if (restored) {
+          // Make sure the results card shows (addTree already activates latest tab)
+          const card = document.getElementById('resultsCard');
+          if (card) card.style.display = 'block';
+        }
+      } catch (e) {
+        console.warn('restoreCachedTrees failed', e);
+      }
+    };
+
+    // ---- Auto-restore saved trees on normal loads & bfcache returns ----
+    const waitFor = (pred, { timeout = 6000, interval = 40 } = {}) =>
+      new Promise(resolve => {
+        if (pred()) return resolve(true);
+        let t = 0;
+        const id = setInterval(() => {
+          if (pred()) { clearInterval(id); clearTimeout(to); return resolve(true); }
+          if ((t += interval) >= timeout) { clearInterval(id); return resolve(false); }
+        }, interval);
+        const to = setTimeout(() => { clearInterval(id); resolve(false); }, timeout);
+      });
+
+    // Ensure there is a singleton TreeManager before we restore
+    async function ensureTreeManager() {
+      if (window.treeManager) return window.treeManager;
+
+      // If the constructor is already on window (some builds do this)
+      if (window.TreeManager) {
+        window.treeManager = new window.TreeManager();
+        return window.treeManager;
+      }
+
+      // Otherwise, import the module and construct it
+      try {
+        const mod = await import('./tree-manager.js');
+        const TM = mod.TreeManager || mod.default;
+        if (TM) {
+          window.treeManager = new TM();
+          return window.treeManager;
+        }
+      } catch (e) {
+        console.warn('ensureTreeManager import failed', e);
+      }
+      return null;
+    }
+
+    async function bootRestore() {
+      if (window.__bootRestoreDone) return;     // ⬅️ prevents double boot
+      window.__bootRestoreDone = true;
+
+      try {
+        document.body.classList.add('in-home'); // so resultsCard isn't CSS-hidden
+
+        // Make sure a manager exists (handles both module + global builds)
+        await ensureTreeManager();
+
+        // Now it's safe to restore tabs from IDB
+        await window.restoreCachedTrees?.();
+      } catch (err) {
+        console.warn('bootRestore failed', err);
+      }
+    }
+
+    // pageshow fires after full load AND on back/forward cache restores
+    window.addEventListener('pageshow', () => { void bootRestore(); }, { once: true });
+  </script>
+  
+  <script type="module" src="/ui-auth.js"></script>
+  <!-- Ensure TreeManager is available before dependent modules -->
+  <script type="module" src="tree-manager.js"></script>
+  <script type="module" src="script.js"></script>
+  <script type="module" src="taxon-autocomplete.js"></script>
+  <script type="module" src="compare-users.js"></script>
+  <script type="module" src="checkpoint-ui.js"></script>
+  <script type="module" src="markmap-integration.js"></script>
+  <script type="module" src="battle-animation.js"></script>
+  <script type="module" src="theme-toggle.js"></script>
+  <script type="module" src="checklist-tab.js"></script>
+
+  <script>
+
+    function ensureResultsVisible() {
+      // Check if we need to keep the results card visible
+      if (window.treeManager && window.treeManager.trees && window.treeManager.trees.length > 0) {
+        const resultsCard = document.getElementById('resultsCard');
+        const inHome = document.body.classList.contains('in-home'); // <— new
+        if (resultsCard && inHome) {                                // <— only on Explore
+          console.log('Making results card visible - trees exist');
+          resultsCard.style.display = 'block';
+
+          // Force a reflow to ensure the element is fully visible
+          void resultsCard.offsetWidth;
+        }
+      }
+
+      // Re-render all trees after a slight delay
+      setTimeout(renderVisibleTrees, 300);
+    }
+
+    function renderVisibleTrees() {
+      if (!window.treeManager || !window.treeManager.trees || window.treeManager.trees.length === 0) {
+        console.log('No trees to render');
+        return;
+      }
+
+      console.log('Rendering visible trees...');
+
+      // Find active tree tabs
+      const activeTreeTab = document.querySelector('#treeTabs .nav-link.active');
+      if (activeTreeTab) {
+        // We have an active tree tab
+        const treeId = activeTreeTab.id.replace('-tab', '');
+        const tree = window.treeManager.trees.find(t => t.id === treeId);
+        if (tree) {
+          console.log('Rendering active tree:', treeId);
+
+          // First, make sure the SVG is clean and tree tab is visible
+          const svg = document.getElementById(`${tree.id}-svg`);
+          const treePane = document.getElementById(`${tree.id}-content`);
+
+          if (svg && treePane) {
+            // Make sure the pane is active and visible
+            treePane.classList.add('show', 'active');
+            svg.innerHTML = '';
+
+            // Force reflow to ensure dimensions are calculated
+            void svg.offsetWidth;
+
+            // Now render
+            setTimeout(() => {
+              if (tree.isComparison) {
+                window.treeManager.renderComparisonTree(tree);
+              } else {
+                window.treeManager.renderTree(tree);
+              }
+            }, 100);
+          }
+        }
+      } else if (window.treeManager.trees.length > 0) {
+        // No active tab but trees exist - activate the most recent one
+        const mostRecentTree = window.treeManager.trees[window.treeManager.trees.length - 1];
+        const tabToActivate = document.getElementById(`${mostRecentTree.id}-tab`);
+
+        if (tabToActivate) {
+          console.log('Activating most recent tree tab:', mostRecentTree.id);
+
+          // Try using Bootstrap Tab API if available
+          if (typeof bootstrap !== 'undefined' && bootstrap.Tab) {
+            const bootstrapTab = new bootstrap.Tab(tabToActivate);
+            bootstrapTab.show();
+          } else {
+            // Fallback to manual activation
+            document.querySelectorAll('#treeTabs .nav-link').forEach(tab => {
+              tab.classList.remove('active');
+              tab.setAttribute('aria-selected', 'false');
+            });
+            tabToActivate.classList.add('active');
+            tabToActivate.setAttribute('aria-selected', 'true');
+
+            document.querySelectorAll('#treeTabContent .tab-pane').forEach(pane => {
+              pane.classList.remove('show', 'active');
+            });
+            const paneToShow = document.getElementById(`${mostRecentTree.id}-content`);
+            if (paneToShow) {
+              paneToShow.classList.add('show', 'active');
+            }
+          }
+
+          // Render after tab activation
+          setTimeout(() => {
+            const svg = document.getElementById(`${mostRecentTree.id}-svg`);
+            if (svg) {
+              svg.innerHTML = '';
+              // Force reflow
+              void svg.offsetWidth;
+
+              if (mostRecentTree.isComparison) {
+                window.treeManager.renderComparisonTree(mostRecentTree);
+              } else {
+                window.treeManager.renderTree(mostRecentTree);
+              }
+            }
+          }, 300);
+        }
+      }
+    }
+
+    // Lifelist scope toggle: default to previous choice, else "global" (back-compat)
+    (function initLifelistToggle(){
+      const el = document.getElementById('lifelistScope');
+      if (!el) return;
+      const saved = localStorage.getItem('lifelistScope'); // 'global' | 'region'
+      if (saved === 'region') el.checked = false;
+      else if (saved === 'global') el.checked = true;
+      else el.checked = true; // default = global
+
+      el.addEventListener('change', () => {
+        localStorage.setItem('lifelistScope', el.checked ? 'global' : 'region');
+      });
+
+      // convenient getter for other modules
+      window.getLifelistScope = function getLifelistScope() {
+        return (document.getElementById('lifelistScope')?.checked) ? 'global' : 'region';
+      };
+    })();
+
+
+    // Initialize everything properly when the page loads
+    window.addEventListener('load', function() {
+      console.log('Window fully loaded');
+
+      // Register event handlers for Bootstrap tab events
+      document.addEventListener('shown.bs.tab', function(event) {
+        const targetId = event.target.getAttribute('href') || event.target.getAttribute('data-bs-target');
+        if (!(targetId && targetId.includes('-content'))) return;
+
+        const paneId = targetId.replace('#', '');
+        const treeId = paneId.replace('-content', '');
+
+        // Try Explore manager first
+        let mgr = window.treeManager;
+        let tree = mgr?.trees.find(t => t.id === treeId);
+
+        // If not found, try PvP manager
+        if (!tree && window.pvpManager) {
+          mgr = window.pvpManager;
+          tree = mgr.trees.find(t => t.id === treeId);
+        }
+        if (!tree || !mgr) return;
+
+        const svg = document.getElementById(`${treeId}-svg`);
+        if (svg) {
+          svg.innerHTML = '';
+          void svg.offsetWidth; // reflow
+          setTimeout(() => {
+            if (tree.isComparison) mgr.renderComparisonTree(tree);
+            else mgr.renderTree(tree);
+          }, 100);
+        }
+      });
+    });
+
+    // Fullscreen toggle for the results area
+    (function () {
+      const btn = document.getElementById('mmFullscreenBtn');
+      const card = document.getElementById('resultsCard');
+      btn?.addEventListener('click', () => {
+        if (!document.fullscreenElement) card?.requestFullscreen?.();
+        else document.exitFullscreen?.();
+      });
+      // When fullscreen size changes, re-fit the active tree
+      document.addEventListener('fullscreenchange', () => {
+        const activePane = document.querySelector('#treeTabContent .tab-pane.active');
+        const svg = activePane?.querySelector('svg');
+        if (!svg || !window.treeManager) return;
+        const id = activePane.id.replace('-content','');
+        const tree = window.treeManager.trees.find(t => t.id === id);
+        if (tree?._mm) setTimeout(() => tree._mm.fit(), 50);
+      });
+    })();
+  </script>
+  <!-- Add this right before the closing </body> tag in your index.html file -->
+  <footer class="mt-5 mb-3 text-center">
+    <div class="container">
+      <div class="row justify-content-center">
+        <div class="col-auto">
+        </div>
+        <div class="col-auto ms-3">
+          <!-- Supabase badge removed after migration -->
+        </div>
+      </div>
+    </div>
+  </footer>
+
+</body>
+</html>
