@@ -724,12 +724,10 @@ body.dark-theme small, body.dark-theme .text-muted { color: #d0d6d8 !important; 
 }
 .mm-toolbar .form-select, .mm-toolbar .btn { padding: .25rem .5rem; }
 
-/* Only show Explore's global results on Explore */
+/* Only show each tab's results card when that tab is active */
 body:not(.in-home) #resultsCard { display: none !important; }
-
-/* Existing rules stay */
-body.in-pvp #resultsCard { display: none !important; }
 body:not(.in-pvp) #pvpResultsCard { display: none !important; }
+body:not(.in-checklist) #clResultsCard { display: none !important; }
 
 /* Lifelist switch with inline text */
 .lifelist-switch .form-check-input.lifelist-toggle {
