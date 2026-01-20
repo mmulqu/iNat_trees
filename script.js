@@ -19,7 +19,7 @@ const edgeFunctionUrl = `${API_BASE}/build-taxonomy`;
 window.API_BASE = API_BASE;
 
 // Browser-only species set via /observations/species_counts (no photos here)
-async function fetchUserSpeciesViaCounts({ username, taxonId, placeId, d1, d2, maxPages = 50 }) {
+async function fetchUserSpeciesViaCounts({ username, taxonId, placeId, d1, d2, maxPages = 50, onProgress }) {
   const per = 200;
   let page = 1;
   const species = new Set();
@@ -37,6 +37,9 @@ async function fetchUserSpeciesViaCounts({ username, taxonId, placeId, d1, d2, m
     u.searchParams.set('per_page', String(per));
     u.searchParams.set('page', String(page));
 
+    // Report progress
+    if (onProgress) onProgress({ page, species: species.size, phase: 'fetching' });
+
     const r = await fetch(u);
     if (!r.ok) break;
     const j = await r.json().catch(() => ({ results: [] }));
@@ -49,6 +52,10 @@ async function fetchUserSpeciesViaCounts({ username, taxonId, placeId, d1, d2, m
     page += 1;
     await new Promise(res => setTimeout(res, 500));
   }
+
+  // Report completion
+  if (onProgress) onProgress({ page, species: species.size, phase: 'complete' });
+
   return Array.from(species);
 }
 
@@ -119,10 +126,12 @@ function renderMarkmap(markdown, username, taxonName, taxonId, plainMarkdown) {
 function showLoadingSpinner() {
   const spinnerContainer = document.getElementById("loadingSpinner");
   const loadingText = document.getElementById("loadingText");
+  const loadingProgress = document.getElementById("loadingProgress");
   const resultsCard = document.getElementById("resultsCard");
   resultsCard.style.display = "none";
   spinnerContainer.style.display = "flex";
   loadingText.textContent = loadingMessages[Math.floor(Math.random() * loadingMessages.length)];
+  if (loadingProgress) loadingProgress.textContent = "";
   return setInterval(() => {
     loadingText.textContent = loadingMessages[Math.floor(Math.random() * loadingMessages.length)];
   }, 4000);
@@ -130,6 +139,13 @@ function showLoadingSpinner() {
 
 function hideLoadingSpinner() {
   document.getElementById("loadingSpinner").style.display = "none";
+  const loadingProgress = document.getElementById("loadingProgress");
+  if (loadingProgress) loadingProgress.textContent = "";
+}
+
+function updateLoadingProgress(text) {
+  const loadingProgress = document.getElementById("loadingProgress");
+  if (loadingProgress) loadingProgress.textContent = text;
 }
 
 function showResults() {
@@ -274,7 +290,19 @@ document.getElementById("treeForm").addEventListener("submit", async (e) => {
     // Public mode: fetch in browser → send IDs to Worker; else use /build-taxonomy
     let result;
     if (PUBLIC_MODE) {
-      const taxonIds = await fetchUserSpeciesViaCounts({ username, taxonId, d1, d2 });
+      const taxonIds = await fetchUserSpeciesViaCounts({
+        username,
+        taxonId,
+        d1,
+        d2,
+        onProgress: ({ page, species, phase }) => {
+          if (phase === 'fetching') {
+            updateLoadingProgress(`Fetching page ${page}... (${species} species found)`);
+          } else if (phase === 'complete') {
+            updateLoadingProgress(`Building tree with ${species} species...`);
+          }
+        }
+      });
       const rankCounts = {}; // (optional: compute client-side if desired)
       const highWatermarkUpdatedAt = null;
       const r2 = await fetch(`${API_BASE}/tree-from-species`, {
