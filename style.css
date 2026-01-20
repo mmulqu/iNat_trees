@@ -686,6 +686,21 @@ body.dark-theme small, body.dark-theme .text-muted { color: #d0d6d8 !important; 
   position: relative;
 }
 
+/* Ensure only active tab pane is visible (Bootstrap override for tree tabs) */
+#treeTabContent .tab-pane,
+#pvpTreeTabContent .tab-pane,
+#clTreeTabContent .tab-pane,
+#cpTreeTabContent .tab-pane {
+  display: none;
+}
+
+#treeTabContent .tab-pane.active,
+#pvpTreeTabContent .tab-pane.active,
+#clTreeTabContent .tab-pane.active,
+#cpTreeTabContent .tab-pane.active {
+  display: block;
+}
+
 #resultsCard {
   position: relative;
   z-index: 100;
