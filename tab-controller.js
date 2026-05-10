@@ -24,6 +24,10 @@ function showTab(tabId) {
   document.body.classList.toggle('in-pvp',         tabId === 'pvpPane');
   document.body.classList.toggle('in-checkpoints', tabId === 'checkpointsPane');
   document.body.classList.toggle('in-checklist',   tabId === 'checklistPane');
+  document.body.classList.toggle('in-hallway',     tabId === 'hallwayPane');
+
+  // Notify the hallway view that the tab changed (so it can pause/resume rendering)
+  try { window.dispatchEvent(new CustomEvent('hallway:tabchange', { detail: { tabId } })); } catch(_) {}
 
   // Get all result cards
   const exploreCard   = document.getElementById('resultsCard');
