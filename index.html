@@ -57,8 +57,8 @@
       <a class="navbar-brand" href="#">iNaturalist Taxonomic Tree Viewer</a>
       <ul class="navbar-nav ms-auto">
         <li class="nav-item"><a class="nav-link active" id="home-tab" href="#" onclick="showTab('home')">Explore</a></li>
+        <li class="nav-item"><a class="nav-link" id="hallwayPane-tab" href="#" onclick="showTab('hallwayPane')">3D Hallway</a></li>
         <li class="nav-item"><a class="nav-link" id="pvpPane-tab" href="#" onclick="showTab('pvpPane')">PvP</a></li>
-        <li class="nav-item" style="display:none;"><a class="nav-link" id="checkpoints-tab" href="#" onclick="showTab('checkpointsPane')">Timelines</a></li>
         <li class="nav-item"><a class="nav-link" id="checklistPane-tab" href="#" onclick="showTab('checklistPane')">Checklists</a></li>
         <li class="nav-item ms-3">
           <button id="themeToggle" class="btn btn-sm btn-outline-light" title="Toggle light/dark mode">
@@ -140,6 +140,115 @@
           </div>
         </div>
 
+  </div>
+
+  <!-- 3D Hallway pane -->
+  <div id="hallwayPane" class="tab-pane main-pane" style="display:none;">
+    <div class="card">
+      <div class="card-header">Walk Through Your Taxonomic Hallway</div>
+      <div class="card-body">
+        <p class="text-muted small mb-3">
+          A 3D museum-style hallway of a user's observations. Each species hangs as a card on the wall — click a card to flip it and see where you saw it on a map.
+        </p>
+        <form id="hallwayForm">
+          <div class="row mb-3">
+            <div class="col-md-12">
+              <label for="hallwayUsername" class="form-label">iNaturalist Username:</label>
+              <input type="text" id="hallwayUsername" name="hallwayUsername" required class="form-control" placeholder="Enter iNaturalist username">
+            </div>
+          </div>
+
+          <div class="mb-3">
+            <label class="form-label text-muted small mb-1">Filter by observation date (optional)</label>
+            <div class="d-flex align-items-center gap-2 flex-wrap">
+              <input type="date" class="form-control" id="hallwayObsStart" style="max-width: 160px;">
+              <span class="text-muted">to</span>
+              <input type="date" class="form-control" id="hallwayObsEnd" style="max-width: 160px;">
+            </div>
+          </div>
+
+          <div class="toggle-container mb-4">
+            <label class="form-label">Search by:</label>
+            <div class="btn-group w-100" role="group">
+              <input type="radio" class="btn-check" name="hallwaySearchType" id="hallwaySearchName" autocomplete="off" checked>
+              <label class="btn btn-outline-primary" for="hallwaySearchName">Name (Common or Scientific)</label>
+              <input type="radio" class="btn-check" name="hallwaySearchType" id="hallwaySearchId" autocomplete="off">
+              <label class="btn btn-outline-primary" for="hallwaySearchId">Taxon ID</label>
+            </div>
+          </div>
+
+          <div id="hallwayNameSearch" class="search-option active">
+            <label for="hallwayTaxonName" class="form-label">Taxon Name:</label>
+            <div class="autocomplete-container">
+              <input type="text" id="hallwayTaxonName" name="hallwayTaxonName" class="form-control" placeholder="Start typing common or scientific name...">
+              <div id="hallwayAutocompleteResults" class="autocomplete-results"></div>
+              <input type="hidden" id="hallwaySelectedTaxonId" name="hallwaySelectedTaxonId">
+            </div>
+            <p class="info-text">Only genus level or higher taxonomic ranks work well for hallways.</p>
+          </div>
+
+          <div id="hallwayIdSearch" class="search-option">
+            <label for="hallwayTaxonId" class="form-label">Taxon ID:</label>
+            <input type="number" id="hallwayTaxonId" name="hallwayTaxonId" class="form-control" placeholder="e.g., 47115 for Mollusca">
+          </div>
+
+          <div class="helpful-tips">
+            <h5>Helpful Tips</h5>
+            <p class="mb-0">Once inside the hallway: <strong>W A S D</strong> or arrow keys to move, drag the mouse to look around, scroll to walk forward/back, and <strong>click</strong> a species card to flip it for stats and the map of where you saw it.</p>
+          </div>
+
+          <button type="submit" class="btn btn-primary">Enter Hallway</button>
+        </form>
+
+        <div class="spinner-container" id="hallwaySpinner" style="display:none;">
+          <div class="spinner"></div>
+          <div class="spinner-text" id="hallwayLoadingText">Constructing your hallway...</div>
+          <div class="spinner-progress" id="hallwayLoadingProgress"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Fullscreen 3D scene overlay (shown after submit) -->
+    <div id="hallwayScene" class="hallway-scene" style="display:none;">
+      <canvas id="hallwayCanvas"></canvas>
+      <div class="hallway-hud">
+        <div class="hallway-hud-left">
+          <div class="hallway-hud-title" id="hallwayHudTitle">—</div>
+          <div class="hallway-hud-sub" id="hallwayHudSub"></div>
+        </div>
+        <div class="hallway-hud-help">
+          <span><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> move</span>
+          <span><kbd>drag</kbd> look</span>
+          <span><kbd>scroll</kbd> walk</span>
+          <span><kbd>click</kbd> card to flip</span>
+        </div>
+        <div class="hallway-hud-right">
+          <button class="btn btn-sm btn-outline-light hallway-help-btn" id="hallwayResetBtn" title="Return to start">⟲ Reset</button>
+          <button class="btn btn-sm btn-light hallway-exit-btn" id="hallwayExitBtn">Exit Hallway</button>
+        </div>
+      </div>
+      <div class="hallway-card-detail" id="hallwayCardDetail" style="display:none;">
+        <div class="hallway-card-detail-inner">
+          <button class="hallway-card-close" id="hallwayCardClose" title="Close (flip card back)">✕</button>
+          <div class="hallway-card-photo" id="hallwayCardPhoto"></div>
+          <div class="hallway-card-body">
+            <div class="hallway-card-name" id="hallwayCardName"></div>
+            <div class="hallway-card-common" id="hallwayCardCommon"></div>
+            <div class="hallway-card-meta" id="hallwayCardMeta"></div>
+            <div class="hallway-card-map" id="hallwayCardMap"></div>
+            <div class="hallway-card-actions">
+              <a id="hallwayCardLink" class="btn btn-sm btn-primary" href="#" target="_blank" rel="noopener">Open on iNaturalist</a>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="hallway-loading-overlay" id="hallwayLoadingOverlay" style="display:none;">
+        <div class="hallway-loading-inner">
+          <div class="spinner"></div>
+          <div class="hallway-loading-text" id="hallwayOverlayText">Hanging photos on the walls…</div>
+        </div>
+      </div>
+    </div>
   </div>
 
   <!-- PvP (Compare Users) pane -->
@@ -721,6 +830,15 @@
     window.addEventListener('pageshow', () => { void bootRestore(); }, { once: true });
   </script>
   
+  <!-- Three.js for the 3D Hallway view (loaded via import map) -->
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+      }
+    }
+  </script>
+
   <script type="module" src="/ui-auth.js"></script>
   <!-- Ensure TreeManager is available before dependent modules -->
   <script type="module" src="tree-manager.js"></script>
@@ -732,6 +850,7 @@
   <script type="module" src="battle-animation.js"></script>
   <script type="module" src="theme-toggle.js"></script>
   <script type="module" src="checklist-tab.js"></script>
+  <script type="module" src="hallway-3d.js"></script>
 
   <script>
 
