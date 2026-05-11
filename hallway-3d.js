@@ -63,8 +63,8 @@ const GALLERY_WIDTH   = 7.0;
 const GALLERY_DEPTH   = 6.0;
 const PEDESTAL_SIZE   = 4.2;
 const WALL_HEIGHT     = 3.4;
-const PILLAR_RADIUS   = 0.16;
-const PILLAR_HEIGHT   = 3.6;
+const PILLAR_RADIUS   = 0.13;
+const PILLAR_HEIGHT   = 2.2;
 const ROOM_SPACING    = 14.0;   // base distance between parent + child room centers
 const CARD_W          = 1.25;
 const CARD_H          = 0.95;
@@ -73,6 +73,11 @@ const CAMERA_HEIGHT   = 1.65;
 const GATE_W          = 1.5;
 const GATE_H          = 2.6;
 const MAX_RENDERED    = 240;    // safety cap on number of rendered rooms+leaves
+// LOD culling: rooms farther than this from the camera are hidden each tick
+// (their meshes stay in the scene but skip rendering). The fog fades out
+// before culling kicks in so pop-in is hidden by the fade-to-black.
+const ROOM_VISIBLE_RADIUS = 60.0;
+const ROOM_VISIBLE_RADIUS_SQ = ROOM_VISIBLE_RADIUS * ROOM_VISIBLE_RADIUS;
 
 // Input tuning
 const DOUBLE_TAP_MS   = 350;
@@ -701,7 +706,8 @@ class HallwayScene {
 
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0x06070a);
-    this.scene.fog = new THREE.Fog(0x06070a, 18, 90);
+    // Tighter fog so distant rooms fade to black before they're culled.
+    this.scene.fog = new THREE.Fog(0x06070a, 14, 55);
 
     this.camera = new THREE.PerspectiveCamera(72, 1, 0.1, 400);
     this.camera.position.set(0, CAMERA_HEIGHT, 6);
@@ -737,13 +743,23 @@ class HallwayScene {
   }
 
   _setupLights() {
-    const ambient = new THREE.AmbientLight(0xfff5e6, 0.45);
+    // We deliberately avoid per-room PointLights — they used to add one per
+    // junction, which compiled hundreds of light slots into every material
+    // and tanked the framerate on big taxa like Lepidoptera. Instead the
+    // scene uses three global lights plus a single player-follow light that
+    // moves with the camera so wherever the user looks is well-lit.
+    const ambient = new THREE.AmbientLight(0xfff5e6, 0.55);
     this.scene.add(ambient);
-    const dir = new THREE.DirectionalLight(0xfff0d6, 0.45);
+    const dir = new THREE.DirectionalLight(0xfff0d6, 0.55);
     dir.position.set(2, 8, 6);
     this.scene.add(dir);
-    const hemi = new THREE.HemisphereLight(0x8090a0, 0x101010, 0.35);
+    const hemi = new THREE.HemisphereLight(0x8090a0, 0x0c0c12, 0.45);
     this.scene.add(hemi);
+    // Player-follow point light: bright cone right around the camera, dies
+    // off quickly so it doesn't affect distant rooms.
+    this._followLight = new THREE.PointLight(0xffe6b8, 1.5, 14, 1.8);
+    this._followLight.position.copy(this.camera.position);
+    this.scene.add(this._followLight);
   }
 
   _attachEvents() {
@@ -998,6 +1014,7 @@ class HallwayScene {
     this.linearBays = [];
     this.tree = null;
     this._currentRoom = null;
+    this._billboards = [];
     this._photosTotal = 0;
     this._photosLoaded = 0;
     this._updatePhotoProgress();
@@ -1062,12 +1079,9 @@ class HallwayScene {
     cap.position.set(0, WALL_HEIGHT / 2, endZ - 0.5);
     this.structureGroup.add(cap);
 
-    // Gallery point-lights along the corridor
-    for (let z = startZ - 1; z > endZ; z -= BAY_DEPTH) {
-      const light = new THREE.PointLight(0xffe6b8, 1.1, 9, 1.6);
-      light.position.set(0, WALL_HEIGHT - 0.25, z);
-      this.scene.add(light);
-    }
+    // Lighting comes from the global lights + player-follow PointLight set
+    // up in _setupLights — no per-bay PointLights (they tank framerate when
+    // you have a hundred bays).
 
     // Per-bay accent stripes + cards + waypoint
     this._linearBayInfo = [];
@@ -1231,6 +1245,16 @@ class HallwayScene {
     );
   }
 
+  // Parent a mesh under the node's per-room group so distance-based culling
+  // can hide the whole room's meshes with one .visible toggle each frame.
+  _addToRoom(node, obj) {
+    if (!node._roomGroup) {
+      node._roomGroup = new THREE.Group();
+      this.structureGroup.add(node._roomGroup);
+    }
+    node._roomGroup.add(obj);
+  }
+
   _addPillars(node, halfW, halfD) {
     const tint = colorForRank(node.rank);
     const pillarMat = new THREE.MeshStandardMaterial({
@@ -1239,7 +1263,7 @@ class HallwayScene {
       metalness: 0.05
     });
     const capMat = new THREE.MeshStandardMaterial({
-      color: tint, emissive: tint, emissiveIntensity: 0.3, roughness: 0.4
+      color: tint, emissive: tint, emissiveIntensity: 0.45, roughness: 0.4
     });
     const corners = [
       [-halfW, -halfD], [+halfW, -halfD],
@@ -1248,17 +1272,17 @@ class HallwayScene {
     for (const [lx, lz] of corners) {
       const p = this._toWorld(node, lx, lz);
       const col = new THREE.Mesh(
-        new THREE.CylinderGeometry(PILLAR_RADIUS, PILLAR_RADIUS, PILLAR_HEIGHT, 12),
+        new THREE.CylinderGeometry(PILLAR_RADIUS, PILLAR_RADIUS, PILLAR_HEIGHT, 10),
         pillarMat
       );
       col.position.set(p.x, PILLAR_HEIGHT / 2, p.z);
-      this.structureGroup.add(col);
+      this._addToRoom(node, col);
       const cap = new THREE.Mesh(
-        new THREE.CylinderGeometry(PILLAR_RADIUS * 1.7, PILLAR_RADIUS * 1.3, 0.2, 12),
+        new THREE.CylinderGeometry(PILLAR_RADIUS * 1.7, PILLAR_RADIUS * 1.3, 0.18, 10),
         capMat
       );
-      cap.position.set(p.x, PILLAR_HEIGHT + 0.05, p.z);
-      this.structureGroup.add(cap);
+      cap.position.set(p.x, PILLAR_HEIGHT + 0.04, p.z);
+      this._addToRoom(node, cap);
     }
   }
 
@@ -1273,30 +1297,29 @@ class HallwayScene {
     // Orient floor's local axes with the room's forward
     const angle = Math.atan2(node.forward.x, node.forward.z);
     floor.rotation.z = -angle; // counter-rotate plane after x-rotation
-    this.structureGroup.add(floor);
+    this._addToRoom(node, floor);
 
     // Rank-colored inlay strip along the room boundary
     const inlay = new THREE.Mesh(
       new THREE.PlaneGeometry(w - 0.4, d - 0.4),
       new THREE.MeshStandardMaterial({
         color: 0x2c3447, roughness: 0.6, metalness: 0.0,
-        emissive: accent, emissiveIntensity: 0.06
+        emissive: accent, emissiveIntensity: 0.12
       })
     );
     inlay.rotation.x = -Math.PI / 2;
     inlay.position.set(node.position.x, 0.02, node.position.z);
     inlay.rotation.z = -angle;
-    this.structureGroup.add(inlay);
+    this._addToRoom(node, inlay);
   }
 
-  _addRoomLight(node, intensity = 1.0) {
-    const light = new THREE.PointLight(0xffe6b8, intensity, 16, 1.6);
-    light.position.set(node.position.x, WALL_HEIGHT - 0.15, node.position.z);
-    this.scene.add(light);
+  _addRoomLight(/* node */) {
+    // No-op: removed per-room PointLights for perf. Lighting comes from the
+    // global lights + the player-follow PointLight in _setupLights, plus
+    // emissive materials on accent stripes and gate beams.
   }
 
   _addRoomSign(node) {
-    const halfW = (this._roomSize(node).w) / 2;
     const halfD = (this._roomSize(node).d) / 2;
 
     const accent = cssColorForRank(node.rank);
@@ -1310,17 +1333,18 @@ class HallwayScene {
       prefix: node.pathPrefix
     });
     const plane = new THREE.Mesh(
-      new THREE.PlaneGeometry(2.4, 1.2),
+      new THREE.PlaneGeometry(2.0, 1.0),
       new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide, transparent: true })
     );
-    // Hang the sign overhead at the far end of the room (local +Z = the
-    // node.forward side). The plane is double-sided so it's readable from
-    // both the entrance and the inside as the player walks deeper in.
+    // Hang the sign overhead at the far end of the room. We billboard it
+    // toward the camera every frame so it always reads cleanly regardless
+    // of which approach angle the player is on.
     const farLocal = +halfD - 0.25;
     const pos = this._toWorld(node, 0, farLocal);
-    plane.position.set(pos.x, 2.7, pos.z);
-    plane.lookAt(node.position.x, 2.7, node.position.z);
-    this.structureGroup.add(plane);
+    plane.position.set(pos.x, 2.8, pos.z);
+    plane.userData.kind = 'room-sign';
+    this._addToRoom(node, plane);
+    (this._billboards ||= []).push(plane);
   }
 
   _roomSize(node) {
@@ -1419,33 +1443,27 @@ class HallwayScene {
     this._addPillars(node, halfW + 0.1, halfD + 0.1);
     this._addRoomSign(node);
 
-    // Tall spotlight from above
-    const spot = new THREE.SpotLight(0xfff2c8, 14.0, 12, Math.PI / 5, 0.35, 1.6);
-    spot.position.set(node.position.x, 3.6, node.position.z);
-    spot.target.position.set(node.position.x, 1.0, node.position.z);
-    this.scene.add(spot);
-    this.scene.add(spot.target);
-
-    // Plinth in the center
+    // Plinth in the center (no SpotLight — instead the accent cap is heavily
+    // emissive so the pedestal still reads as a spot of focused light).
     const plinthH = 1.0;
     const plinth = new THREE.Mesh(
       new THREE.BoxGeometry(1.0, plinthH, 1.0),
       new THREE.MeshStandardMaterial({ color: 0x2f3a52, roughness: 0.5, metalness: 0.1 })
     );
     plinth.position.set(node.position.x, plinthH / 2, node.position.z);
-    this.structureGroup.add(plinth);
+    this._addToRoom(node, plinth);
 
     const accentCap = new THREE.Mesh(
       new THREE.BoxGeometry(1.05, 0.06, 1.05),
       new THREE.MeshStandardMaterial({
         color: colorForRank(node.rank),
         emissive: colorForRank(node.rank),
-        emissiveIntensity: 0.5,
+        emissiveIntensity: 1.4,
         roughness: 0.4
       })
     );
     accentCap.position.set(node.position.x, plinthH + 0.03, node.position.z);
-    this.structureGroup.add(accentCap);
+    this._addToRoom(node, accentCap);
 
     // The single species card sits on top, facing the entrance (-node.forward)
     const sp = (node._cards && node._cards[0]) || null;
@@ -1457,7 +1475,7 @@ class HallwayScene {
       card.group.rotation.y = ang;
       card.frontNormal = new THREE.Vector3(-node.forward.x, 0, -node.forward.z);
       card.room = node;
-      this.cardsGroup.add(card.group);
+      this._addToRoom(node, card.group);
       this.cards.push(card);
     }
 
@@ -1488,7 +1506,7 @@ class HallwayScene {
     card.group.rotation.y = ang;
     card.frontNormal = worldNormal;
     card.room = node;
-    this.cardsGroup.add(card.group);
+    this._addToRoom(node, card.group);
     this.cards.push(card);
   }
 
@@ -1528,22 +1546,6 @@ class HallwayScene {
     beam.position.set(0, GATE_H + 0.15, 0);
     gateGroup.add(beam);
 
-    // Sign above the beam: child name + species count
-    const signTex = makeGateSignTexture({
-      title: child.name,
-      subtitle: child.rank ? capitalize(child.rank) : '',
-      accent: accentCss,
-      count: child.speciesUnder
-    });
-    const sign = new THREE.Mesh(
-      new THREE.PlaneGeometry(GATE_W + 0.6, 0.7),
-      new THREE.MeshBasicMaterial({ map: signTex, side: THREE.DoubleSide, transparent: true })
-    );
-    sign.position.set(0, GATE_H + 0.7, 0.0);
-    // Label faces back into the parent room (its -Z local)
-    sign.rotation.y = Math.PI;
-    gateGroup.add(sign);
-
     // The clickable face: a translucent panel inside the arch
     const fill = new THREE.Mesh(
       new THREE.PlaneGeometry(GATE_W - 0.05, GATE_H - 0.2),
@@ -1554,10 +1556,30 @@ class HallwayScene {
     fill.position.set(0, (GATE_H - 0.2) / 2 + 0.1, 0);
     gateGroup.add(fill);
 
-    this.structureGroup.add(gateGroup);
+    this._addToRoom(parent, gateGroup);
+
+    // Sign sits as a sibling of the gate (not parented to gateGroup) so we
+    // can billboard it toward the camera each frame without fighting the
+    // gate's rotation. Smaller than before — previous signs overlapped into
+    // garbled text when several gates clustered at similar angles.
+    const signTex = makeGateSignTexture({
+      title: child.name,
+      subtitle: child.rank ? capitalize(child.rank) : '',
+      accent: accentCss,
+      count: child.speciesUnder
+    });
+    const sign = new THREE.Mesh(
+      new THREE.PlaneGeometry(1.4, 0.55),
+      new THREE.MeshBasicMaterial({ map: signTex, side: THREE.DoubleSide, transparent: true })
+    );
+    sign.position.set(world.x, GATE_H + 0.55, world.z);
+    sign.userData.kind = 'gate-sign';
+    this._addToRoom(parent, sign);
+    (this._billboards ||= []).push(sign);
 
     this.gates.push({
       mesh: fill,
+      sign,
       parentNode: parent,
       childNode: child,
       position: new THREE.Vector3(world.x, 0, world.z),
@@ -1597,43 +1619,50 @@ class HallwayScene {
   }
 
   _buildConnector(parent, child) {
-    // A lit floor strip from parent's edge to child's edge along the
-    // (child.position - parent.position) line.
+    // A lit floor strip from parent's room to child's room. We extend the
+    // strip the full center-to-center distance (plus a small overshoot)
+    // and render it just above the world floor; the rooms' own floors are
+    // higher (y = 0.01–0.02) and cover the strip wherever they overlap,
+    // so the visible portion is exactly the corridor between rooms.
     const a = parent.position;
     const b = child.position;
     const dir = new THREE.Vector3(b.x - a.x, 0, b.z - a.z).normalize();
     const fullLen = a.distanceTo(b);
-    const parentHalfD = this._roomSize(parent).d / 2;
-    const childHalfD  = this._roomSize(child).d / 2;
-    // Strip starts just outside parent's front wall and ends just outside child's back wall.
-    const startGap = parentHalfD;
-    const endGap   = childHalfD;
-    const segLen = Math.max(0.5, fullLen - startGap - endGap);
-    const cx = (a.x + dir.x * (startGap + segLen / 2));
-    const cz = (a.z + dir.z * (startGap + segLen / 2));
+    const segLen = fullLen + 0.6;
+    const cx = (a.x + b.x) / 2;
+    const cz = (a.z + b.z) / 2;
     const accent = colorForRank(child.rank);
 
     const strip = new THREE.Mesh(
-      new THREE.PlaneGeometry(1.8, segLen),
+      new THREE.PlaneGeometry(2.4, segLen),
       new THREE.MeshStandardMaterial({
         color: 0x2a3344, roughness: 0.85,
-        emissive: accent, emissiveIntensity: 0.08
+        emissive: accent, emissiveIntensity: 0.10
       })
     );
     strip.rotation.x = -Math.PI / 2;
-    strip.position.set(cx, 0.015, cz);
+    strip.position.set(cx, 0.008, cz);
     // Orient the long axis of the strip with `dir`
     strip.rotation.z = -Math.atan2(dir.x, dir.z);
-    this.structureGroup.add(strip);
+    this._addToRoom(parent, strip);
 
-    // Tiny rank-accent ring at the midpoint to read direction at a glance
-    const dot = new THREE.Mesh(
-      new THREE.RingGeometry(0.18, 0.28, 16),
-      new THREE.MeshBasicMaterial({ color: accent, side: THREE.DoubleSide, transparent: true, opacity: 0.85 })
-    );
-    dot.rotation.x = -Math.PI / 2;
-    dot.position.set(cx, 0.03, cz);
-    this.structureGroup.add(dot);
+    // A few small accent rings along the strip so the corridor reads as
+    // a directional path even before the user moves.
+    const ringSteps = Math.max(2, Math.min(5, Math.round(fullLen / 3)));
+    for (let i = 1; i <= ringSteps; i++) {
+      const t = i / (ringSteps + 1);
+      const rx = a.x + (b.x - a.x) * t;
+      const rz = a.z + (b.z - a.z) * t;
+      const ring = new THREE.Mesh(
+        new THREE.RingGeometry(0.16, 0.26, 16),
+        new THREE.MeshBasicMaterial({
+          color: accent, side: THREE.DoubleSide, transparent: true, opacity: 0.8
+        })
+      );
+      ring.rotation.x = -Math.PI / 2;
+      ring.position.set(rx, 0.025, rz);
+      this._addToRoom(parent, ring);
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -1892,10 +1921,63 @@ class HallwayScene {
       }
     }
 
+    // Keep the player-follow light glued to the camera so the user always
+    // walks inside a pool of warm light, even in branching mode where rooms
+    // no longer carry their own PointLights.
+    if (this._followLight) {
+      this._followLight.position.set(
+        this.camera.position.x,
+        this.camera.position.y + 0.4,
+        this.camera.position.z
+      );
+    }
+
+    // Billboard signs (room signs + gate signs) toward the camera so their
+    // text always reads cleanly. Skip while a card is open — the camera is
+    // already locked on the card and we don't want signs spinning.
+    if (this._billboards && !this._activeCard) {
+      this._billboardAll();
+    }
+
+    // Throttle the expensive LOD walk: only every ~150ms, and only if the
+    // camera has actually moved.
+    this._visibilityAccum = (this._visibilityAccum || 0) + dt;
+    if (this._visibilityAccum > 0.15) {
+      this._visibilityAccum = 0;
+      this._updateRoomVisibility();
+    }
+
     // Update HUD periodically based on nearest room (branching) or bay (linear)
     if (!this._activeCard && !this._cameraTween) {
       if (this.layoutMode === 'linear') this._maybeUpdateLinearHud();
       else this._maybeUpdateCurrentRoomByProximity();
+    }
+  }
+
+  _billboardAll() {
+    const cx = this.camera.position.x;
+    const cz = this.camera.position.z;
+    for (const sign of this._billboards) {
+      // Only billboard visible signs; skip ones in culled rooms.
+      if (!sign.visible) continue;
+      const worldPos = sign.position; // signs are direct children of room groups (no extra rotation between)
+      // Get the sign's world position; since its parent room group has no rotation,
+      // sign.position IS effectively world position.
+      const dx = cx - worldPos.x;
+      const dz = cz - worldPos.z;
+      sign.rotation.y = Math.atan2(dx, dz);
+    }
+  }
+
+  _updateRoomVisibility() {
+    if (!this.rooms || !this.rooms.length) return;
+    const cp = this.camera.position;
+    for (const r of this.rooms) {
+      const g = r._roomGroup;
+      if (!g) continue;
+      const dx = r.position.x - cp.x;
+      const dz = r.position.z - cp.z;
+      g.visible = (dx * dx + dz * dz) <= ROOM_VISIBLE_RADIUS_SQ;
     }
   }
 
@@ -2094,9 +2176,17 @@ class HallwayScene {
     this.mouseNdc.x = ((x - rect.left) / rect.width) * 2 - 1;
     this.mouseNdc.y = -((y - rect.top) / rect.height) * 2 + 1;
     this.raycaster.setFromCamera(this.mouseNdc, this.camera);
+    // Three.js Raycaster only checks each mesh's own .visible, not its
+    // parent chain — so a card inside a culled (hidden) room group could
+    // still register a hit. Filter candidates by walking up to ensure
+    // every ancestor is visible.
     const candidates = [];
-    for (const c of this.cards) candidates.push(c.frontMesh);
-    for (const g of this.gates) candidates.push(g.mesh);
+    const isReallyVisible = (m) => {
+      for (let cur = m; cur; cur = cur.parent) if (cur.visible === false) return false;
+      return true;
+    };
+    for (const c of this.cards) if (isReallyVisible(c.frontMesh)) candidates.push(c.frontMesh);
+    for (const g of this.gates) if (isReallyVisible(g.mesh)) candidates.push(g.mesh);
     const hits = this.raycaster.intersectObjects(candidates, false);
     if (!hits.length) return null;
     const obj = hits[0].object;
