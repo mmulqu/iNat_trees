@@ -982,6 +982,19 @@ body.dark-theme .checklist-stats-panel .progress {
   font-weight: 600;
 }
 
+.hallway-photo-progress {
+  display: inline-flex;
+  align-items: center;
+  background: rgba(15, 23, 42, 0.62);
+  border: 1px solid rgba(255,255,255,0.10);
+  color: #e2e8f0;
+  font-size: 0.78rem;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-variant-numeric: tabular-nums;
+  backdrop-filter: blur(4px);
+}
+
 /* Card detail flyout (the "back of the card" content) */
 .hallway-card-detail {
   position: absolute;

@@ -119,24 +119,51 @@ async function fetchUserSpecies({ username, baseTaxonId, d1, d2, onProgress }) {
   return out;
 }
 
-async function fetchTaxaNames(ids) {
+async function fetchTaxaNames(ids, onProgress) {
   const out = {};
   const chunk = 30;
+  const batches = [];
   for (let i = 0; i < ids.length; i += chunk) {
     const c = ids.slice(i, i + chunk).filter(Boolean);
-    if (!c.length) continue;
-    try {
-      const r = await fetch(`https://api.inaturalist.org/v1/taxa/${c.join(',')}`);
-      const j = await r.json();
-      for (const t of (j.results || [])) {
-        out[t.id] = {
-          name: t.name,
-          common: t.preferred_common_name || '',
-          rank: String(t.rank || '').toLowerCase()
-        };
-      }
-    } catch {}
+    if (c.length) batches.push(c);
   }
+  if (!batches.length) { onProgress?.(0, 0); return out; }
+
+  let done = 0;
+  let next = 0;
+  const concurrency = 4;
+  async function worker() {
+    while (next < batches.length) {
+      const my = next++;
+      const c = batches[my];
+      try {
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), 10000);
+        const r = await fetch(
+          `https://api.inaturalist.org/v1/taxa/${c.join(',')}`,
+          { signal: ctrl.signal }
+        );
+        clearTimeout(timer);
+        if (r.ok) {
+          const j = await r.json();
+          for (const t of (j.results || [])) {
+            out[t.id] = {
+              name: t.name,
+              common: t.preferred_common_name || '',
+              rank: String(t.rank || '').toLowerCase()
+            };
+          }
+        }
+      } catch (e) {
+        // network or timeout — skip this batch silently
+      }
+      done++;
+      onProgress?.(done, batches.length);
+    }
+  }
+  const workers = [];
+  for (let i = 0; i < concurrency; i++) workers.push(worker());
+  await Promise.all(workers);
   return out;
 }
 
@@ -817,31 +844,40 @@ class HallwayScene {
   // -------------------------------------------------------------------------
   // Build pipeline
   // -------------------------------------------------------------------------
-  async build(species) {
+  async build(species, onProgress) {
     this.species = species;
+    this._onBuildProgress = onProgress || null;
 
     if (this.layoutMode === 'linear') {
-      await this._buildLinearScene();
+      await this._buildLinearScene(onProgress);
     } else {
-      await this._buildBranchingScene();
+      await this._buildBranchingScene(onProgress);
     }
+
+    onProgress?.({ pct: 1.0, label: 'Hallway ready' });
 
     // Async load user's first-observation photos to populate card fronts.
     this._loadUserPhotos();
-
     this._refreshLayoutToggleBtn();
   }
 
-  async _buildBranchingScene() {
+  async _buildBranchingScene(onProgress) {
+    onProgress?.({ pct: 0.02, label: 'Loading taxonomy' });
+
     // Gather every ancestor id we touch + the base
     const ids = new Set([this.ctx.baseTaxonId]);
     for (const s of this.species) for (const a of s.ancestors) ids.add(a);
     // Reuse cached metadata across rebuilds so toggling modes is fast.
     const missing = [...ids].filter(id => !this._ancestorMeta[id]);
     if (missing.length) {
-      const fetched = await fetchTaxaNames(missing);
+      const fetched = await fetchTaxaNames(missing, (done, total) => {
+        const p = total ? done / total : 1;
+        onProgress?.({ pct: 0.02 + 0.30 * p, label: `Loading taxonomy (${done}/${total})` });
+      });
       Object.assign(this._ancestorMeta, fetched);
     }
+    onProgress?.({ pct: 0.34, label: 'Arranging the tree' });
+    await yieldFrame();
 
     const rawRoot = buildRawTree(this.species, this.ctx.baseTaxonId, this._ancestorMeta);
     if (!rawRoot) return;
@@ -851,45 +887,58 @@ class HallwayScene {
     this.tree = rendered;
 
     this.rooms = collectRoomNodes(rendered);
-
+    onProgress?.({ pct: 0.40, label: `Building rooms (0/${this.rooms.length})` });
     this._buildWorld();
-    this._buildAllRooms();
-    this._buildAllConnectors();
 
+    await this._buildAllRooms((done, total) => {
+      const p = total ? done / total : 1;
+      onProgress?.({ pct: 0.40 + 0.45 * p, label: `Building rooms (${done}/${total})` });
+    });
+
+    await this._buildAllConnectors((done, total) => {
+      const p = total ? done / total : 1;
+      onProgress?.({ pct: 0.85 + 0.10 * p, label: `Connecting rooms` });
+    });
+
+    onProgress?.({ pct: 0.97, label: 'Stepping inside' });
     this._currentRoom = rendered;
     this._enterRoom(rendered, /*instant=*/true);
   }
 
-  async _buildLinearScene() {
-    // Bay-pack the species into a straight corridor. We still want ancestor
-    // names for the HUD breadcrumb-ish label ("approaching Foo family"),
-    // so prefetch metadata for the shared-ancestor of each bay.
-    const cap = MAX_RENDERED * 6; // ~hundreds of cards comfortably
+  async _buildLinearScene(onProgress) {
+    onProgress?.({ pct: 0.05, label: 'Sorting species' });
+    // Bay-pack the species into a straight corridor.
+    const cap = MAX_RENDERED * 6;
     const subset = this.species.slice(0, cap);
     const bays = groupSpeciesIntoLinearBays(subset, 6);
     this.linearBays = bays;
     this.tree = null;
     this.rooms = [];
 
+    // Background fetch ancestor names for the HUD label per bay; not awaited.
     const ancIds = [...new Set(bays.map(b => b.sharedAncestorId).filter(Boolean))];
-    const missing = ancIds.filter(id => !this._ancestorMeta[id]);
-    if (missing.length) {
-      fetchTaxaNames(missing).then(map => Object.assign(this._ancestorMeta, map))
+    const missingAnc = ancIds.filter(id => !this._ancestorMeta[id]);
+    if (missingAnc.length) {
+      fetchTaxaNames(missingAnc).then(map => Object.assign(this._ancestorMeta, map))
         .catch(() => {});
     }
 
-    this._buildLinearCorridor(bays);
+    onProgress?.({ pct: 0.15, label: `Building bays (0/${bays.length})` });
+    await this._buildLinearCorridor(bays, (done, total) => {
+      const p = total ? done / total : 1;
+      onProgress?.({ pct: 0.15 + 0.80 * p, label: `Building bays (${done}/${total})` });
+    });
   }
 
   // Mode swap from inside the running scene. Tears down the current geometry
   // and rebuilds with the alternate layout, reusing this.species and any
   // cached ancestor metadata.
-  async setLayoutMode(mode) {
+  async setLayoutMode(mode, onProgress) {
     if (mode !== 'branching' && mode !== 'linear') return;
     if (mode === this.layoutMode) return;
     this.layoutMode = mode;
     this._resetForRebuild();
-    await this.build(this.species);
+    await this.build(this.species, onProgress);
   }
 
   _resetForRebuild() {
@@ -930,6 +979,9 @@ class HallwayScene {
     this.linearBays = [];
     this.tree = null;
     this._currentRoom = null;
+    this._photosTotal = 0;
+    this._photosLoaded = 0;
+    this._updatePhotoProgress();
 
     this.camera.position.set(0, CAMERA_HEIGHT, 6);
     this.yaw = 0;
@@ -940,7 +992,7 @@ class HallwayScene {
   // -------------------------------------------------------------------------
   // Linear-corridor builder
   // -------------------------------------------------------------------------
-  _buildLinearCorridor(bays) {
+  async _buildLinearCorridor(bays, onProgress) {
     const ENTRY_DEPTH = 4.0;
     const BAY_DEPTH   = 5.0;
     const BAY_GAP     = 0.9;
@@ -1001,7 +1053,8 @@ class HallwayScene {
     // Per-bay accent stripes + cards + waypoint
     this._linearBayInfo = [];
     let z = startZ - 1.0;
-    bays.forEach((bay, bayIdx) => {
+    for (let bayIdx = 0; bayIdx < bays.length; bayIdx++) {
+      const bay = bays[bayIdx];
       const bayStartZ = z;
       const bayEndZ = bayStartZ - BAY_DEPTH;
       const repRank = bay.species[0]?.rank || 'species';
@@ -1059,7 +1112,14 @@ class HallwayScene {
       });
 
       z = bayEndZ - BAY_GAP;
-    });
+
+      // Yield + report progress every few bays so the loading overlay updates
+      // and the page stays responsive on hundreds-of-species users.
+      if ((bayIdx + 1) % 6 === 0 || bayIdx === bays.length - 1) {
+        onProgress?.(bayIdx + 1, bays.length);
+        await yieldFrame();
+      }
+    }
 
     // Camera entry pose
     this.camera.position.set(0, CAMERA_HEIGHT, ENTRY_DEPTH - 0.5);
@@ -1123,11 +1183,18 @@ class HallwayScene {
     this._worldBounds = { min, max, w, d, cx, cz };
   }
 
-  _buildAllRooms() {
-    for (const r of this.rooms) {
+  async _buildAllRooms(onProgress) {
+    const total = this.rooms.length;
+    for (let i = 0; i < total; i++) {
+      const r = this.rooms[i];
       if (r.roomType === 'junction')   this._buildJunctionRoom(r);
       else if (r.roomType === 'gallery')  this._buildGalleryRoom(r);
       else if (r.roomType === 'pedestal') this._buildPedestalRoom(r);
+      // Yield every few rooms so the browser repaints + progress text advances.
+      if ((i + 1) % 6 === 0 || i === total - 1) {
+        onProgress?.(i + 1, total);
+        await yieldFrame();
+      }
     }
   }
 
@@ -1489,16 +1556,25 @@ class HallwayScene {
     });
   }
 
-  _buildAllConnectors() {
-    function walk(n, scene) {
+  async _buildAllConnectors(onProgress) {
+    // Flatten parent→child pairs first so we can iterate with yields.
+    const pairs = [];
+    function walk(n) {
       if (!n.children) return;
       for (const c of n.children) {
         if (c.roomType === 'leaf') continue;
-        scene._buildConnector(n, c);
-        walk(c, scene);
+        pairs.push([n, c]);
+        walk(c);
       }
     }
-    walk(this.tree, this);
+    walk(this.tree);
+    for (let i = 0; i < pairs.length; i++) {
+      this._buildConnector(pairs[i][0], pairs[i][1]);
+      if ((i + 1) % 24 === 0 || i === pairs.length - 1) {
+        onProgress?.(i + 1, pairs.length);
+        await yieldFrame();
+      }
+    }
   }
 
   _buildConnector(parent, child) {
@@ -1555,13 +1631,14 @@ class HallwayScene {
       subtitle: species.common,
       color: accent
     });
-    const backTex = makeBackTexture(species);
-
+    // Back texture is created lazily on first flip — building hundreds of
+    // canvas textures up front would lock the JS thread for several seconds
+    // on a large taxon like Lepidoptera.
     const frontMat = new THREE.MeshStandardMaterial({
       map: placeholderTex, roughness: 0.6, metalness: 0.0
     });
     const backMat = new THREE.MeshStandardMaterial({
-      map: backTex, roughness: 0.6, metalness: 0.0
+      color: colorForRank(species.rank), roughness: 0.6, metalness: 0.0
     });
 
     const geo = new THREE.PlaneGeometry(CARD_W, CARD_H);
@@ -1602,22 +1679,55 @@ class HallwayScene {
       flipFrom: 0,
       flipTo: 0,
       _placeholderTex: placeholderTex,
+      _backTexCreated: false,
       room: null,
       frontNormal: new THREE.Vector3(0, 0, 1)
     };
   }
 
+  // Defer the per-card back-canvas texture creation until the user flips a
+  // card (most cards are never flipped in a large hallway).
+  _ensureBackTexture(card) {
+    if (card._backTexCreated) return;
+    const tex = makeBackTexture(card.species);
+    card.backMesh.material.map = tex;
+    card.backMesh.material.color.set(0xffffff);
+    card.backMesh.material.needsUpdate = true;
+    card._backTexCreated = true;
+  }
+
   async _loadUserPhotos() {
+    // Visit cards in order of distance from the camera so the user sees the
+    // photos in front of them first. The camera starts inside the lobby for
+    // branching mode and at the corridor entry for linear mode, so the
+    // closest 10–20 cards get priority and stream in within ~1–2 seconds.
     const username = this.ctx.username;
-    const cards = this.cards;
     const getFirstObs = window.getFirstObs;
+    const camPos = this.camera.position.clone();
+    const cards = [...this.cards];
+    cards.sort((a, b) => {
+      const ap = new THREE.Vector3();
+      const bp = new THREE.Vector3();
+      a.group.getWorldPosition(ap);
+      b.group.getWorldPosition(bp);
+      return ap.distanceToSquared(camPos) - bp.distanceToSquared(camPos);
+    });
+
+    // Hard cap so a 1000-card hallway doesn't pound the API for minutes.
+    const PHOTO_CAP = 160;
+    const queue = cards.slice(0, PHOTO_CAP);
+    this._photosTotal = queue.length;
+    this._photosLoaded = 0;
+    this._updatePhotoProgress();
+
     let idx = 0;
-    const concurrency = 6;
+    const concurrency = 8;
+    const failures = { count: 0 };
 
     const work = async () => {
-      while (idx < cards.length) {
+      while (idx < queue.length) {
         const myIdx = idx++;
-        const card = cards[myIdx];
+        const card = queue[myIdx];
         try {
           let url = null;
           if (getFirstObs) {
@@ -1628,7 +1738,11 @@ class HallwayScene {
             } catch {}
           }
           if (!url) url = card.species.defaultPhoto;
-          if (!url) continue;
+          if (!url) {
+            this._photosLoaded++;
+            this._updatePhotoProgress();
+            continue;
+          }
           const tex = await loadTexture(url);
           if (tex && card.frontMesh) {
             tex.center.set(0.5, 0.5);
@@ -1644,14 +1758,39 @@ class HallwayScene {
             card.frontMesh.material.map?.dispose?.();
             card.frontMesh.material.map = tex;
             card.frontMesh.material.needsUpdate = true;
+          } else if (!tex) {
+            // CORS or 404. Note the failure so the HUD can hint if many fail.
+            failures.count++;
+            if (failures.count === 5) {
+              console.warn('[hallway] several photos failed to load — likely CORS on iNat photo CDN');
+            }
           }
-        } catch {}
-        await new Promise(r => setTimeout(r, 10));
+        } catch (e) {
+          failures.count++;
+        }
+        this._photosLoaded++;
+        this._updatePhotoProgress();
+        // Tiny gap to keep the UI responsive
+        await new Promise(r => setTimeout(r, 5));
       }
     };
     const workers = [];
     for (let i = 0; i < concurrency; i++) workers.push(work());
     Promise.all(workers).catch(() => {});
+  }
+
+  _updatePhotoProgress() {
+    const el = document.getElementById('hallwayPhotoProgress');
+    if (!el) return;
+    const total = this._photosTotal || 0;
+    const done = this._photosLoaded || 0;
+    if (!total || done >= total) {
+      el.style.display = 'none';
+      el.textContent = '';
+      return;
+    }
+    el.style.display = 'inline-flex';
+    el.textContent = `📷 ${done}/${total}`;
   }
 
   // -------------------------------------------------------------------------
@@ -1953,6 +2092,7 @@ class HallwayScene {
   _openCard(card) {
     if (this._activeCard) return;
     this._activeCard = card;
+    this._ensureBackTexture(card);
 
     const cardPos = new THREE.Vector3();
     card.group.getWorldPosition(cardPos);
@@ -2146,6 +2286,8 @@ class HallwayScene {
 // ---------------------------------------------------------------------------
 function easeInOut(t) { return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2; }
 function lerpNum(a, b, t) { return a + (b - a) * t; }
+// Yield to the browser so paint + progress text update during heavy build loops.
+function yieldFrame() { return new Promise(r => setTimeout(r, 0)); }
 function lerpAngle(a, b, t) {
   let d = ((b - a) + Math.PI) % (2 * Math.PI) - Math.PI;
   if (d < -Math.PI) d += 2 * Math.PI;
@@ -2308,9 +2450,16 @@ function wireFormSubmit() {
     const canvas = document.getElementById('hallwayCanvas');
     activeScene = new HallwayScene(canvas, ctx);
     const overlay = document.getElementById('hallwayLoadingOverlay');
+    const overlayText = document.getElementById('hallwayOverlayText');
     if (overlay) overlay.style.display = 'flex';
+    if (overlayText) overlayText.textContent = 'Starting hallway…';
+    const onProgress = ({ pct, label }) => {
+      if (!overlayText) return;
+      const pctTxt = pct != null ? ` ${Math.round(pct * 100)}%` : '';
+      overlayText.textContent = `${label}${pctTxt}`;
+    };
     try {
-      await activeScene.build(species);
+      await activeScene.build(species, onProgress);
     } catch (err) {
       console.error('hallway build failed', err);
       showError('Building the hallway failed: ' + err.message);
@@ -2342,9 +2491,14 @@ function wireSceneControls() {
       }
       overlay.style.display = 'flex';
     }
+    const onProgress = ({ pct, label }) => {
+      if (!overlayText) return;
+      const pctTxt = pct != null ? ` ${Math.round(pct * 100)}%` : '';
+      overlayText.textContent = `${label}${pctTxt}`;
+    };
     try {
       const next = activeScene.layoutMode === 'branching' ? 'linear' : 'branching';
-      await activeScene.setLayoutMode(next);
+      await activeScene.setLayoutMode(next, onProgress);
     } finally {
       if (overlay) overlay.style.display = 'none';
       if (btn) btn.disabled = false;
