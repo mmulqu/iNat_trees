@@ -236,6 +236,19 @@ function buildRawTree(species, baseTaxonId, ancestorMeta) {
     const baseIdx = chain.indexOf(base);
     if (baseIdx >= 0) chain = chain.slice(baseIdx);
     else chain = [base, ...chain];
+
+    // iNat's ancestor_ids array often *already* includes the taxon's own id
+    // as the last entry. Pushing s.id again would create chain[N-2] === chain[N-1],
+    // which makes that node a child of itself in the loop below — and then
+    // finalize() recurses forever (RangeError: Maximum call stack size exceeded).
+    // De-dupe defensively and ensure s.id sits exactly once at the end.
+    const seen = new Set();
+    chain = chain.filter(id => {
+      if (id === s.id) return false;        // we'll re-append below
+      if (seen.has(id)) return false;       // drop any other dupes
+      seen.add(id);
+      return true;
+    });
     chain.push(s.id);
 
     let parent = null;
@@ -246,7 +259,7 @@ function buildRawTree(species, baseTaxonId, ancestorMeta) {
         : ancestorMeta[id];
       const n = makeNode(id, meta);
       if (i === chain.length - 1) n.species = s;
-      if (parent && !parent.children.has(id)) {
+      if (parent && parent !== n && !parent.children.has(id)) {
         parent.children.set(id, n);
         n.parent = parent;
       }
@@ -254,15 +267,21 @@ function buildRawTree(species, baseTaxonId, ancestorMeta) {
     }
   }
 
-  const finalize = (n) => {
+  // Both walks carry a `visited` set so a cycle (from any source — bad iNat
+  // data, future bug) can't recurse forever.
+  const finalize = (n, visited = new Set()) => {
+    if (visited.has(n)) return;
+    visited.add(n);
     n.children = [...n.children.values()];
     n.children.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
-    n.children.forEach(finalize);
+    for (const c of n.children) finalize(c, visited);
   };
-  const count = (n) => {
+  const count = (n, visited = new Set()) => {
+    if (visited.has(n)) return n.speciesUnder || 0;
+    visited.add(n);
     if (n.species) { n.speciesUnder = 1; return 1; }
     let total = 0;
-    for (const c of n.children) total += count(c);
+    for (const c of n.children) total += count(c, visited);
     n.speciesUnder = total;
     return total;
   };
@@ -1713,9 +1732,11 @@ class HallwayScene {
       return ap.distanceToSquared(camPos) - bp.distanceToSquared(camPos);
     });
 
-    // Hard cap so a 1000-card hallway doesn't pound the API for minutes.
-    const PHOTO_CAP = 160;
-    const queue = cards.slice(0, PHOTO_CAP);
+    // Load photos for every card in the scene (sorted nearest-first so the
+    // wall the user is staring at populates within a couple seconds). A very
+    // large taxon will take a while in the background — the HUD chip shows
+    // progress so the user can tell it's still streaming.
+    const queue = cards;
     this._photosTotal = queue.length;
     this._photosLoaded = 0;
     this._updatePhotoProgress();
