@@ -419,6 +419,32 @@ function buildBreadcrumb(node) {
   return segs;
 }
 
+// Linear mode: ignore the tree, pack species into a straight corridor of
+// "bays" (one bay = 3 cards per wall × 2 walls). Species are sorted by their
+// ancestor chain so taxonomically-related species sit next to each other.
+function groupSpeciesIntoLinearBays(species, perBay = 6) {
+  const sorted = [...species].sort((a, b) => {
+    const aKey = a.ancestors.join(',') + '/' + (a.name || '');
+    const bKey = b.ancestors.join(',') + '/' + (b.name || '');
+    return aKey.localeCompare(bKey);
+  });
+  const bays = [];
+  for (let i = 0; i < sorted.length; i += perBay) {
+    const slice = sorted.slice(i, i + perBay);
+    // Deepest ancestor every species in this bay shares — used for the HUD
+    // label "you're approaching <Family Foo>".
+    const sets = slice.map(s => new Set(s.ancestors));
+    const first = slice[0].ancestors;
+    let sharedDeepest = null;
+    for (let j = first.length - 1; j >= 0; j--) {
+      const aid = first[j];
+      if (sets.every(set => set.has(aid))) { sharedDeepest = aid; break; }
+    }
+    bays.push({ species: slice, sharedAncestorId: sharedDeepest });
+  }
+  return bays;
+}
+
 // ---------------------------------------------------------------------------
 // Texture helpers
 // ---------------------------------------------------------------------------
@@ -604,8 +630,11 @@ class HallwayScene {
   constructor(canvas, ctx) {
     this.canvas = canvas;
     this.ctx = ctx;
+    this.layoutMode = ctx.layoutMode || 'branching'; // 'branching' | 'linear'
     this.species = [];
     this.tree = null;
+    this.linearBays = [];     // populated when layoutMode === 'linear'
+    this._ancestorMeta = {};  // cached across rebuilds
     this.rooms = [];          // every room node in render order
     this.cards = [];          // { group, flipGroup, frontMesh, backMesh, species, room, ... }
     this.gates = [];          // { mesh, parentNode, childNode, position, normal }
@@ -791,33 +820,277 @@ class HallwayScene {
   async build(species) {
     this.species = species;
 
+    if (this.layoutMode === 'linear') {
+      await this._buildLinearScene();
+    } else {
+      await this._buildBranchingScene();
+    }
+
+    // Async load user's first-observation photos to populate card fronts.
+    this._loadUserPhotos();
+
+    this._refreshLayoutToggleBtn();
+  }
+
+  async _buildBranchingScene() {
     // Gather every ancestor id we touch + the base
     const ids = new Set([this.ctx.baseTaxonId]);
-    for (const s of species) for (const a of s.ancestors) ids.add(a);
-    const ancestorMeta = await fetchTaxaNames([...ids]);
+    for (const s of this.species) for (const a of s.ancestors) ids.add(a);
+    // Reuse cached metadata across rebuilds so toggling modes is fast.
+    const missing = [...ids].filter(id => !this._ancestorMeta[id]);
+    if (missing.length) {
+      const fetched = await fetchTaxaNames(missing);
+      Object.assign(this._ancestorMeta, fetched);
+    }
 
-    // Build, collapse, classify, layout
-    const rawRoot = buildRawTree(species, this.ctx.baseTaxonId, ancestorMeta);
+    const rawRoot = buildRawTree(this.species, this.ctx.baseTaxonId, this._ancestorMeta);
     if (!rawRoot) return;
     const rendered = buildRenderedTree(rawRoot);
     classifyTree(rendered);
     layoutTree(rendered);
     this.tree = rendered;
 
-    // Collect all rooms for navigation + collision-free floor sizing
     this.rooms = collectRoomNodes(rendered);
 
-    // Build the world
     this._buildWorld();
     this._buildAllRooms();
     this._buildAllConnectors();
 
-    // Enter the root room
     this._currentRoom = rendered;
     this._enterRoom(rendered, /*instant=*/true);
+  }
 
-    // Async load user's first-observation photos to populate card fronts.
-    this._loadUserPhotos();
+  async _buildLinearScene() {
+    // Bay-pack the species into a straight corridor. We still want ancestor
+    // names for the HUD breadcrumb-ish label ("approaching Foo family"),
+    // so prefetch metadata for the shared-ancestor of each bay.
+    const cap = MAX_RENDERED * 6; // ~hundreds of cards comfortably
+    const subset = this.species.slice(0, cap);
+    const bays = groupSpeciesIntoLinearBays(subset, 6);
+    this.linearBays = bays;
+    this.tree = null;
+    this.rooms = [];
+
+    const ancIds = [...new Set(bays.map(b => b.sharedAncestorId).filter(Boolean))];
+    const missing = ancIds.filter(id => !this._ancestorMeta[id]);
+    if (missing.length) {
+      fetchTaxaNames(missing).then(map => Object.assign(this._ancestorMeta, map))
+        .catch(() => {});
+    }
+
+    this._buildLinearCorridor(bays);
+  }
+
+  // Mode swap from inside the running scene. Tears down the current geometry
+  // and rebuilds with the alternate layout, reusing this.species and any
+  // cached ancestor metadata.
+  async setLayoutMode(mode) {
+    if (mode !== 'branching' && mode !== 'linear') return;
+    if (mode === this.layoutMode) return;
+    this.layoutMode = mode;
+    this._resetForRebuild();
+    await this.build(this.species);
+  }
+
+  _resetForRebuild() {
+    this.pause();
+    if (this._activeCard) this._closeActiveCard();
+    this._cameraTween = null;
+
+    // Wipe everything that was added to the scene by previous build().
+    const keep = []; // nothing — even lights get rebuilt by _setupLights below
+    while (this.scene.children.length) {
+      const obj = this.scene.children[this.scene.children.length - 1];
+      this.scene.remove(obj);
+      obj.traverse?.(c => {
+        if (c.geometry) c.geometry.dispose?.();
+        if (c.material) {
+          const mats = Array.isArray(c.material) ? c.material : [c.material];
+          for (const m of mats) {
+            if (m.map) {
+              const src = m.map.source?.data?.src;
+              if (!src || !textureCache.has(src)) m.map.dispose?.();
+            }
+            m.dispose?.();
+          }
+        }
+      });
+    }
+
+    this.structureGroup = new THREE.Group();
+    this.scene.add(this.structureGroup);
+    this.cardsGroup = new THREE.Group();
+    this.scene.add(this.cardsGroup);
+    this._setupLights();
+
+    this.cards = [];
+    this.gates = [];
+    this.rooms = [];
+    this.waypoints = [];
+    this.linearBays = [];
+    this.tree = null;
+    this._currentRoom = null;
+
+    this.camera.position.set(0, CAMERA_HEIGHT, 6);
+    this.yaw = 0;
+    this.pitch = 0;
+    this.start();
+  }
+
+  // -------------------------------------------------------------------------
+  // Linear-corridor builder
+  // -------------------------------------------------------------------------
+  _buildLinearCorridor(bays) {
+    const ENTRY_DEPTH = 4.0;
+    const BAY_DEPTH   = 5.0;
+    const BAY_GAP     = 0.9;
+    const HALF_W      = 2.5;
+    const totalLength =
+      ENTRY_DEPTH +
+      bays.length * BAY_DEPTH +
+      Math.max(0, bays.length - 1) * BAY_GAP +
+      2.0;
+    const startZ = ENTRY_DEPTH;
+    const endZ   = startZ - totalLength;
+
+    // Floor, ceiling, walls
+    const floorMat = new THREE.MeshStandardMaterial({
+      color: 0x2a2018, roughness: 0.85, metalness: 0.0
+    });
+    const floor = new THREE.Mesh(
+      new THREE.PlaneGeometry(HALF_W * 2 + 0.4, totalLength + 4),
+      floorMat
+    );
+    floor.rotation.x = -Math.PI / 2;
+    floor.position.set(0, 0, (startZ + endZ) / 2);
+    this.structureGroup.add(floor);
+
+    const ceilMat = new THREE.MeshStandardMaterial({ color: 0x0a0a14, roughness: 1.0 });
+    const ceiling = new THREE.Mesh(
+      new THREE.PlaneGeometry(HALF_W * 2 + 0.4, totalLength + 4),
+      ceilMat
+    );
+    ceiling.rotation.x = Math.PI / 2;
+    ceiling.position.set(0, WALL_HEIGHT, (startZ + endZ) / 2);
+    this.structureGroup.add(ceiling);
+
+    const wallMat = new THREE.MeshStandardMaterial({ color: 0x252836, roughness: 0.9 });
+    const wallGeo = new THREE.PlaneGeometry(totalLength + 4, WALL_HEIGHT);
+    const wallLeft = new THREE.Mesh(wallGeo, wallMat);
+    wallLeft.rotation.y = Math.PI / 2;
+    wallLeft.position.set(-HALF_W, WALL_HEIGHT / 2, (startZ + endZ) / 2);
+    this.structureGroup.add(wallLeft);
+    const wallRight = new THREE.Mesh(wallGeo.clone(), wallMat);
+    wallRight.rotation.y = -Math.PI / 2;
+    wallRight.position.set(HALF_W, WALL_HEIGHT / 2, (startZ + endZ) / 2);
+    this.structureGroup.add(wallRight);
+    const cap = new THREE.Mesh(
+      new THREE.PlaneGeometry(HALF_W * 2, WALL_HEIGHT),
+      new THREE.MeshStandardMaterial({ color: 0x12141c, roughness: 1.0 })
+    );
+    cap.position.set(0, WALL_HEIGHT / 2, endZ - 0.5);
+    this.structureGroup.add(cap);
+
+    // Gallery point-lights along the corridor
+    for (let z = startZ - 1; z > endZ; z -= BAY_DEPTH) {
+      const light = new THREE.PointLight(0xffe6b8, 1.1, 9, 1.6);
+      light.position.set(0, WALL_HEIGHT - 0.25, z);
+      this.scene.add(light);
+    }
+
+    // Per-bay accent stripes + cards + waypoint
+    this._linearBayInfo = [];
+    let z = startZ - 1.0;
+    bays.forEach((bay, bayIdx) => {
+      const bayStartZ = z;
+      const bayEndZ = bayStartZ - BAY_DEPTH;
+      const repRank = bay.species[0]?.rank || 'species';
+      const accentHex = colorForRank(repRank);
+      const stripeMat = new THREE.MeshStandardMaterial({
+        color: accentHex, emissive: accentHex, emissiveIntensity: 0.35, roughness: 0.4
+      });
+      const stripeGeo = new THREE.BoxGeometry(0.1, 0.12, BAY_DEPTH - 0.2);
+      const stripeL = new THREE.Mesh(stripeGeo, stripeMat);
+      stripeL.position.set(-HALF_W + 0.06, WALL_HEIGHT - 0.25, (bayStartZ + bayEndZ) / 2);
+      this.structureGroup.add(stripeL);
+      const stripeR = new THREE.Mesh(stripeGeo.clone(), stripeMat);
+      stripeR.position.set(HALF_W - 0.06, WALL_HEIGHT - 0.25, (bayStartZ + bayEndZ) / 2);
+      this.structureGroup.add(stripeR);
+
+      // Place cards: 3 per wall
+      const perSide = 3;
+      const slotZs = [];
+      for (let i = 0; i < perSide; i++) {
+        const t = (i + 0.5) / perSide;
+        slotZs.push(bayStartZ - 0.3 - t * (BAY_DEPTH - 0.6));
+      }
+      let cardIdx = 0;
+      for (let side = 0; side < 2; side++) {
+        const sign = side === 0 ? -1 : 1; // -1 = left wall
+        for (let i = 0; i < perSide; i++) {
+          const sp = bay.species[cardIdx++];
+          if (!sp) continue;
+          const cardZ = slotZs[i];
+          const card = this._makeCard(sp);
+          card.group.position.set(sign * (HALF_W - 0.04), CARD_Y, cardZ);
+          card.group.rotation.y = sign === -1 ? Math.PI / 2 : -Math.PI / 2;
+          card.frontNormal = new THREE.Vector3(-sign, 0, 0);
+          card.room = null;
+          this.cardsGroup.add(card.group);
+          this.cards.push(card);
+        }
+      }
+
+      this._linearBayInfo.push({
+        z: bayStartZ,
+        endZ: bayEndZ,
+        sharedAncestorId: bay.sharedAncestorId,
+        color: cssColorForRank(repRank),
+        index: bayIdx
+      });
+
+      // Waypoint at this bay's center so double-tap can hop bay-to-bay
+      const wpZ = (bayStartZ + bayEndZ) / 2;
+      this.waypoints.push({
+        position: new THREE.Vector3(0, CAMERA_HEIGHT, wpZ),
+        yaw: 0,
+        kind: 'bay',
+        ref: bay
+      });
+
+      z = bayEndZ - BAY_GAP;
+    });
+
+    // Camera entry pose
+    this.camera.position.set(0, CAMERA_HEIGHT, ENTRY_DEPTH - 0.5);
+    this.yaw = 0;
+    this.pitch = 0;
+
+    // HUD: in linear mode we suppress the breadcrumb (no tree path).
+    this._setLinearHud(0);
+  }
+
+  _setLinearHud(bayIdx) {
+    const crumb = document.getElementById('hallwayBreadcrumb');
+    if (crumb) crumb.innerHTML = '';
+    const title = document.getElementById('hallwayHudTitle');
+    const sub = document.getElementById('hallwayHudSub');
+    const bays = this._linearBayInfo || [];
+    if (!bays.length || !title || !sub) return;
+    const bay = bays[bayIdx] || bays[0];
+    const color = bay.color || '#22c55e';
+    const anc = this._ancestorMeta?.[bay.sharedAncestorId];
+    const label = anc
+      ? `${anc.rank ? capitalize(anc.rank) + ' ' : ''}${anc.name}`
+      : `Bay ${bayIdx + 1} of ${bays.length}`;
+    title.textContent = label;
+    title.style.borderLeft = `4px solid ${color}`;
+    title.style.paddingLeft = '10px';
+    const cardsBefore = bayIdx * 6;
+    const bayCount = (this.linearBays[bayIdx]?.species?.length) || 0;
+    sub.textContent =
+      `Species ${cardsBefore + 1}–${cardsBefore + bayCount} of ${this.species.length} · ` +
+      `${this.ctx.username} @ ${this.ctx.taxonName}`;
   }
 
   _buildWorld() {
@@ -1420,6 +1693,11 @@ class HallwayScene {
         move.normalize().multiplyScalar(speed * dt);
         this.camera.position.add(move);
         this.camera.position.y = CAMERA_HEIGHT;
+        // Linear mode has a known corridor footprint, so we softly clamp
+        // X to keep the player inside the walls. Branching mode is open.
+        if (this.layoutMode === 'linear') {
+          this.camera.position.x = Math.max(-2.05, Math.min(2.05, this.camera.position.x));
+        }
       }
     }
 
@@ -1454,9 +1732,26 @@ class HallwayScene {
       }
     }
 
-    // Update HUD breadcrumb periodically based on nearest room
+    // Update HUD periodically based on nearest room (branching) or bay (linear)
     if (!this._activeCard && !this._cameraTween) {
-      this._maybeUpdateCurrentRoomByProximity();
+      if (this.layoutMode === 'linear') this._maybeUpdateLinearHud();
+      else this._maybeUpdateCurrentRoomByProximity();
+    }
+  }
+
+  _maybeUpdateLinearHud() {
+    const bays = this._linearBayInfo;
+    if (!bays || !bays.length) return;
+    const z = this.camera.position.z;
+    let bestIdx = 0, bestD = Infinity;
+    for (let i = 0; i < bays.length; i++) {
+      const center = (bays[i].z + bays[i].endZ) / 2;
+      const d = Math.abs(center - z);
+      if (d < bestD) { bestD = d; bestIdx = i; }
+    }
+    if (bestIdx !== this._linearCurrentBay) {
+      this._linearCurrentBay = bestIdx;
+      this._setLinearHud(bestIdx);
     }
   }
 
@@ -1826,7 +2121,23 @@ class HallwayScene {
 
   resetCamera() {
     if (this._activeCard) this._closeActiveCard();
-    if (this.tree) this._enterRoom(this.tree);
+    if (this.layoutMode === 'linear') {
+      this.camera.position.set(0, CAMERA_HEIGHT, 4);
+      this.yaw = 0;
+      this.pitch = 0;
+      this._setLinearHud(0);
+    } else if (this.tree) {
+      this._enterRoom(this.tree);
+    }
+  }
+
+  _refreshLayoutToggleBtn() {
+    const btn = document.getElementById('hallwayLayoutToggle');
+    if (!btn) return;
+    btn.textContent = this.layoutMode === 'branching' ? 'Linear view' : 'Branching view';
+    btn.title = this.layoutMode === 'branching'
+      ? 'Switch to a single straight corridor of all species'
+      : 'Switch to the branching room layout by rank';
   }
 }
 
@@ -1989,7 +2300,8 @@ function wireFormSubmit() {
       return;
     }
     hideSpinner();
-    const ctx = { username, baseTaxonId: Number(taxonId), taxonName };
+    const layoutMode = (document.querySelector('input[name="hallwayLayoutMode"]:checked')?.value) || 'branching';
+    const ctx = { username, baseTaxonId: Number(taxonId), taxonName, layoutMode };
     enterHallway(ctx);
 
     if (activeScene) { try { activeScene.dispose(); } catch {} activeScene = null; }
@@ -2015,6 +2327,28 @@ function wireSceneControls() {
   });
   document.getElementById('hallwayCardClose')?.addEventListener('click', () => {
     activeScene?._closeActiveCard?.();
+  });
+  document.getElementById('hallwayLayoutToggle')?.addEventListener('click', async () => {
+    if (!activeScene) return;
+    const btn = document.getElementById('hallwayLayoutToggle');
+    if (btn) btn.disabled = true;
+    const overlay = document.getElementById('hallwayLoadingOverlay');
+    const overlayText = document.getElementById('hallwayOverlayText');
+    if (overlay) {
+      if (overlayText) {
+        overlayText.textContent = activeScene.layoutMode === 'branching'
+          ? 'Flattening to a single corridor…'
+          : 'Branching the corridors by rank…';
+      }
+      overlay.style.display = 'flex';
+    }
+    try {
+      const next = activeScene.layoutMode === 'branching' ? 'linear' : 'branching';
+      await activeScene.setLayoutMode(next);
+    } finally {
+      if (overlay) overlay.style.display = 'none';
+      if (btn) btn.disabled = false;
+    }
   });
   window.addEventListener('hallway:tabchange', (e) => {
     const tabId = e.detail?.tabId;
