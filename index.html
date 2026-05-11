@@ -194,7 +194,11 @@
 
           <div class="helpful-tips">
             <h5>Helpful Tips</h5>
-            <p class="mb-0">Once inside the hallway: <strong>W A S D</strong> or arrow keys to move, drag the mouse to look around, scroll to walk forward/back, and <strong>click</strong> a species card to flip it for stats and the map of where you saw it.</p>
+            <p class="mb-0">
+              Inside the hallway you walk a museum of your taxonomic tree. Each rank junction has labeled gates to its sub-taxa; species cards live in galleries at the leaves.
+              <br><strong>Desktop:</strong> <kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd> or arrow keys to move, drag the mouse to look, scroll to walk forward, click a gate or card.
+              <br><strong>Mobile:</strong> drag to look, single-tap a gate or card, <strong>double-tap</strong> a spot to walk forward in that direction.
+            </p>
           </div>
 
           <button type="submit" class="btn btn-primary">Enter Hallway</button>
@@ -211,6 +215,7 @@
     <!-- Fullscreen 3D scene overlay (shown after submit) -->
     <div id="hallwayScene" class="hallway-scene" style="display:none;">
       <canvas id="hallwayCanvas"></canvas>
+      <div class="hallway-breadcrumb" id="hallwayBreadcrumb"></div>
       <div class="hallway-hud">
         <div class="hallway-hud-left">
           <div class="hallway-hud-title" id="hallwayHudTitle">—</div>
@@ -219,8 +224,8 @@
         <div class="hallway-hud-help">
           <span><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> move</span>
           <span><kbd>drag</kbd> look</span>
-          <span><kbd>scroll</kbd> walk</span>
-          <span><kbd>click</kbd> card to flip</span>
+          <span><kbd>scroll</kbd> / <kbd>2-tap</kbd> walk</span>
+          <span><kbd>tap</kbd> gate or card</span>
         </div>
         <div class="hallway-hud-right">
           <button class="btn btn-sm btn-outline-light hallway-help-btn" id="hallwayResetBtn" title="Return to start">⟲ Reset</button>
