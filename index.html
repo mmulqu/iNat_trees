@@ -192,6 +192,17 @@
             <input type="number" id="hallwayTaxonId" name="hallwayTaxonId" class="form-control" placeholder="e.g., 47115 for Mollusca">
           </div>
 
+          <div class="toggle-container mb-4">
+            <label class="form-label">Hallway layout:</label>
+            <div class="btn-group w-100" role="group">
+              <input type="radio" class="btn-check" name="hallwayLayoutMode" id="hallwayLayoutBranching" value="branching" autocomplete="off" checked>
+              <label class="btn btn-outline-primary" for="hallwayLayoutBranching">Branching tree (rooms by rank)</label>
+              <input type="radio" class="btn-check" name="hallwayLayoutMode" id="hallwayLayoutLinear" value="linear" autocomplete="off">
+              <label class="btn btn-outline-primary" for="hallwayLayoutLinear">Linear corridor (one hallway)</label>
+            </div>
+            <p class="info-text">Pick branching for a museum-style walk through your taxonomy, or linear for a single straight gallery of every species.</p>
+          </div>
+
           <div class="helpful-tips">
             <h5>Helpful Tips</h5>
             <p class="mb-0">
@@ -228,6 +239,7 @@
           <span><kbd>tap</kbd> gate or card</span>
         </div>
         <div class="hallway-hud-right">
+          <button class="btn btn-sm btn-outline-light hallway-help-btn" id="hallwayLayoutToggle" title="Switch layout">Linear view</button>
           <button class="btn btn-sm btn-outline-light hallway-help-btn" id="hallwayResetBtn" title="Return to start">⟲ Reset</button>
           <button class="btn btn-sm btn-light hallway-exit-btn" id="hallwayExitBtn">Exit Hallway</button>
         </div>
