@@ -1,13 +1,18 @@
 // hallway-3d.js — 3D taxonomic hallway view.
 //
-// Builds an immersive corridor of a user's iNaturalist observations:
-// each species hangs as a card on the wall. Click a card to flip it
-// and see stats + a Leaflet map of where the user observed it.
+// Builds an immersive branching corridor of a user's iNaturalist observations.
+// The taxonomic tree is laid out as a fan of connected rooms: junctions hold
+// doorways to child taxa, galleries hang species cards on the walls, and a
+// lone species sits on a centerpiece pedestal. Click a gate to walk through;
+// click a card to flip it for stats + a Leaflet map.
+//
+// Mobile: drag to look, single-tap to interact, double-tap to walk forward
+// in the direction you tapped (snaps to the nearest waypoint).
 
 import * as THREE from 'three';
 
 // ---------------------------------------------------------------------------
-// Constants (mirrored from tree-manager.js so the look stays consistent)
+// Constants
 // ---------------------------------------------------------------------------
 const RANK_BAND = Object.freeze({
   stateofmatter: 'state',
@@ -38,28 +43,41 @@ const BAND_COLOR_CSS = {
 function bandOf(rank) {
   return RANK_BAND[String(rank || '').toLowerCase()] || 'species';
 }
-
 function colorForRank(rank) {
   return BAND_COLOR_HEX[bandOf(rank)] ?? BAND_COLOR_HEX.species;
 }
-
 function cssColorForRank(rank) {
   return BAND_COLOR_CSS[bandOf(rank)] || BAND_COLOR_CSS.species;
 }
+function capitalize(s) { return (s || '').charAt(0).toUpperCase() + (s || '').slice(1); }
+function escapeHtml(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+  ));
+}
 
-// Layout
-const CORRIDOR_HALF_WIDTH = 2.5;
-const WALL_HEIGHT = 3.4;
-const CARD_W = 1.25;
-const CARD_H = 0.95;
-const CARDS_PER_BAY_SIDE = 3;
-const CARDS_PER_BAY = CARDS_PER_BAY_SIDE * 2;
-const BAY_DEPTH = 5.0;
-const BAY_GAP = 0.9;
-const ENTRY_DEPTH = 4.0;
-const CARD_Y = 1.65;
-const CAMERA_HEIGHT = 1.65;
-const MAX_CARDS = 360; // cap to avoid pathological cases (huge taxa)
+// World layout
+const ROOM_WIDTH      = 6.0;    // junction interior width
+const ROOM_DEPTH      = 5.0;    // junction interior depth
+const GALLERY_WIDTH   = 7.0;
+const GALLERY_DEPTH   = 6.0;
+const PEDESTAL_SIZE   = 4.2;
+const WALL_HEIGHT     = 3.4;
+const PILLAR_RADIUS   = 0.16;
+const PILLAR_HEIGHT   = 3.6;
+const ROOM_SPACING    = 14.0;   // base distance between parent + child room centers
+const CARD_W          = 1.25;
+const CARD_H          = 0.95;
+const CARD_Y          = 1.65;
+const CAMERA_HEIGHT   = 1.65;
+const GATE_W          = 1.5;
+const GATE_H          = 2.6;
+const MAX_RENDERED    = 240;    // safety cap on number of rendered rooms+leaves
+
+// Input tuning
+const DOUBLE_TAP_MS   = 350;
+const DOUBLE_TAP_PX   = 32;
+const TAP_DRAG_PX     = 8;
 
 // ---------------------------------------------------------------------------
 // Data fetch
@@ -151,29 +169,254 @@ async function fetchObservationsForCard({ username, taxonId, max = 80 }) {
 }
 
 // ---------------------------------------------------------------------------
-// Grouping species into bays
+// Tree building
 // ---------------------------------------------------------------------------
-function groupSpeciesIntoBays(species) {
-  // Sort so taxonomically-related species sit next to each other.
-  const sorted = [...species].sort((a, b) => {
-    const aKey = a.ancestors.join(',') + '/' + (a.name || '');
-    const bKey = b.ancestors.join(',') + '/' + (b.name || '');
-    return aKey.localeCompare(bKey);
-  });
+function chunkLabel(node) {
+  if (!node) return '';
+  const rank = node.rank ? capitalize(node.rank) + ' ' : '';
+  return `${rank}${node.name || ''}`.trim();
+}
 
-  const bays = [];
-  for (let i = 0; i < sorted.length; i += CARDS_PER_BAY) {
-    const slice = sorted.slice(i, i + CARDS_PER_BAY);
-    const sets = slice.map(s => new Set(s.ancestors));
-    const first = slice[0].ancestors;
-    let sharedDeepest = null;
-    for (let j = first.length - 1; j >= 0; j--) {
-      const aid = first[j];
-      if (sets.every(set => set.has(aid))) { sharedDeepest = aid; break; }
+// Build the raw taxonomic tree from species rows + ancestor metadata.
+function buildRawTree(species, baseTaxonId, ancestorMeta) {
+  const nodes = new Map();
+  const base = Number(baseTaxonId);
+
+  const makeNode = (id, meta) => {
+    let n = nodes.get(id);
+    if (!n) {
+      n = {
+        id,
+        name: meta?.name || `Taxon ${id}`,
+        common: meta?.common || '',
+        rank: String(meta?.rank || '').toLowerCase(),
+        children: new Map(),
+        speciesUnder: 0,
+        species: null,
+        parent: null
+      };
+      nodes.set(id, n);
+    } else if (meta) {
+      if (!n.name || n.name.startsWith('Taxon ')) n.name = meta.name || n.name;
+      if (!n.common) n.common = meta.common || n.common;
+      if (!n.rank) n.rank = String(meta.rank || '').toLowerCase();
     }
-    bays.push({ species: slice, sharedAncestorId: sharedDeepest });
+    return n;
+  };
+
+  for (const s of species) {
+    let chain = [...s.ancestors];
+    const baseIdx = chain.indexOf(base);
+    if (baseIdx >= 0) chain = chain.slice(baseIdx);
+    else chain = [base, ...chain];
+    chain.push(s.id);
+
+    let parent = null;
+    for (let i = 0; i < chain.length; i++) {
+      const id = chain[i];
+      const meta = (i === chain.length - 1)
+        ? { name: s.name, common: s.common, rank: s.rank }
+        : ancestorMeta[id];
+      const n = makeNode(id, meta);
+      if (i === chain.length - 1) n.species = s;
+      if (parent && !parent.children.has(id)) {
+        parent.children.set(id, n);
+        n.parent = parent;
+      }
+      parent = n;
+    }
   }
-  return bays;
+
+  const finalize = (n) => {
+    n.children = [...n.children.values()];
+    n.children.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+    n.children.forEach(finalize);
+  };
+  const count = (n) => {
+    if (n.species) { n.speciesUnder = 1; return 1; }
+    let total = 0;
+    for (const c of n.children) total += count(c);
+    n.speciesUnder = total;
+    return total;
+  };
+
+  const root = nodes.get(base);
+  if (!root) return null;
+  finalize(root);
+  count(root);
+  return root;
+}
+
+// Apply collapse rules: any non-root, non-leaf node with exactly one non-leaf
+// child gets folded into that child's "path prefix" so we don't render
+// pointless single-doorway rooms.
+function buildRenderedTree(rawRoot) {
+  let nodeCount = 0;
+
+  function makeRendered(rawNode, pathPrefix) {
+    nodeCount++;
+    return {
+      id: rawNode.id,
+      name: rawNode.name,
+      common: rawNode.common,
+      rank: rawNode.rank,
+      pathPrefix,
+      speciesUnder: rawNode.speciesUnder,
+      species: rawNode.species,
+      isLeafSpecies: !!rawNode.species,
+      children: [],
+      parent: null
+    };
+  }
+
+  function build(rawNode, pathPrefix) {
+    if (
+      !rawNode.species &&
+      rawNode.children.length === 1 &&
+      !rawNode.children[0].species
+    ) {
+      const newPrefix = [...pathPrefix, chunkLabel(rawNode)];
+      return build(rawNode.children[0], newPrefix);
+    }
+
+    const rendered = makeRendered(rawNode, pathPrefix);
+    if (!rawNode.species) {
+      for (const c of rawNode.children) {
+        const ch = build(c, []);
+        ch.parent = rendered;
+        rendered.children.push(ch);
+        if (nodeCount > MAX_RENDERED) break;
+      }
+    }
+    return rendered;
+  }
+
+  // Keep the user's chosen base taxon as the visible root, even if it has
+  // only one child. Recurse into its children with collapse applied.
+  const root = makeRendered(rawRoot, []);
+  if (!rawRoot.species) {
+    for (const c of rawRoot.children) {
+      const ch = build(c, []);
+      ch.parent = root;
+      root.children.push(ch);
+      if (nodeCount > MAX_RENDERED) break;
+    }
+  }
+  return root;
+}
+
+// Classify each node as 'junction', 'gallery', 'pedestal', or 'leaf'.
+// - 'leaf'     : the node IS a species; embedded inside its parent room.
+// - 'pedestal' : node whose only children are species, and only one species.
+// - 'gallery'  : node whose only children are species, with 2+ species.
+// - 'junction' : node with one or more sub-room children.
+// Mixed nodes (some species + some sub-rooms) get the loose species moved
+// into a synthetic gallery child labeled "Other species".
+function classifyTree(root) {
+  function visit(n) {
+    if (n.isLeafSpecies) { n.roomType = 'leaf'; return; }
+    n.children.forEach(visit);
+
+    const leaves = n.children.filter(c => c.isLeafSpecies);
+    const subs   = n.children.filter(c => !c.isLeafSpecies);
+
+    if (subs.length === 0) {
+      n.roomType = leaves.length === 1 ? 'pedestal' : 'gallery';
+      n._cards = leaves;
+    } else {
+      n.roomType = 'junction';
+      if (leaves.length > 0) {
+        const synth = {
+          id: -Math.abs(n.id) - 999, // synthetic ID
+          name: leaves.length === 1
+            ? leaves[0].name
+            : `Other ${n.rank ? n.rank : 'taxa'}`,
+          common: '',
+          rank: '',
+          pathPrefix: [],
+          speciesUnder: leaves.length,
+          species: null,
+          isLeafSpecies: false,
+          children: leaves.slice(),
+          parent: n,
+          roomType: leaves.length === 1 ? 'pedestal' : 'gallery',
+          _cards: leaves.slice(),
+          _isSynthetic: true
+        };
+        leaves.forEach(l => { l.parent = synth; });
+        n.children = [...subs, synth];
+      }
+      // For junctions, keep n._cards empty
+      n._cards = [];
+    }
+  }
+  visit(root);
+}
+
+// Radial fan layout: each non-leaf node gets a (position, forward).
+// Children fan out within the parent's allotted angular wedge, weighted by
+// the species count under each child so dense branches get more breathing room.
+function layoutTree(root) {
+  function place(node, allottedArc) {
+    const subs = (node.children || []).filter(c => c.roomType !== 'leaf');
+    if (!subs.length) return;
+
+    const totalUnder = subs.reduce((s, c) => s + Math.max(1, c.speciesUnder || 1), 0);
+    const spread = Math.max(Math.PI * 0.18, Math.min(Math.PI * 0.85, allottedArc));
+
+    let cum = 0;
+    for (const c of subs) {
+      const w = Math.max(1, c.speciesUnder || 1) / totalUnder;
+      // Center of this child's angular slot in [-0.5, 0.5]
+      const tCenter = cum + w / 2 - 0.5;
+      cum += w;
+      const angleOffset = tCenter * spread;
+
+      const pf = node.forward;
+      const cosA = Math.cos(angleOffset), sinA = Math.sin(angleOffset);
+      const cf = new THREE.Vector3(
+        pf.x * cosA + pf.z * sinA,
+        0,
+        -pf.x * sinA + pf.z * cosA
+      ).normalize();
+
+      const diversityBoost = Math.log2((c.speciesUnder || 1) + 1) * 1.4;
+      const dist = ROOM_SPACING + diversityBoost;
+      c.forward = cf;
+      c.position = node.position.clone().add(cf.clone().multiplyScalar(dist));
+
+      place(c, w * spread);
+    }
+  }
+
+  root.position = new THREE.Vector3(0, 0, 0);
+  root.forward  = new THREE.Vector3(0, 0, -1);
+  place(root, Math.PI * 0.7);
+}
+
+function collectRoomNodes(root) {
+  const out = [];
+  function walk(n) {
+    if (n.roomType !== 'leaf') out.push(n);
+    if (n.children) for (const c of n.children) walk(c);
+  }
+  walk(root);
+  return out;
+}
+
+function buildBreadcrumb(node) {
+  const segs = [];
+  let cur = node;
+  while (cur) {
+    if (cur.pathPrefix && cur.pathPrefix.length) {
+      for (let i = cur.pathPrefix.length - 1; i >= 0; i--) {
+        segs.unshift({ label: cur.pathPrefix[i], nodeId: null });
+      }
+    }
+    segs.unshift({ label: chunkLabel(cur), nodeId: cur.id });
+    cur = cur.parent;
+  }
+  return segs;
 }
 
 // ---------------------------------------------------------------------------
@@ -201,44 +444,7 @@ function loadTexture(url) {
   });
 }
 
-function makeLabelTexture({ title, subtitle, color = '#22c55e', big = false }) {
-  const w = 512, h = 384;
-  const c = document.createElement('canvas');
-  c.width = w; c.height = h;
-  const ctx = c.getContext('2d');
-
-  // gradient background
-  const grad = ctx.createLinearGradient(0, 0, 0, h);
-  grad.addColorStop(0, '#1f2937');
-  grad.addColorStop(1, '#0f172a');
-  ctx.fillStyle = grad;
-  ctx.fillRect(0, 0, w, h);
-
-  // accent border
-  ctx.strokeStyle = color;
-  ctx.lineWidth = 10;
-  ctx.strokeRect(5, 5, w - 10, h - 10);
-
-  // title (scientific name)
-  ctx.fillStyle = '#f8fafc';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  const titleSize = big ? 44 : 36;
-  ctx.font = `italic 700 ${titleSize}px Georgia, serif`;
-  wrapText(ctx, title || '—', w / 2, h / 2 - 20, w - 60, titleSize + 8);
-
-  if (subtitle) {
-    ctx.fillStyle = '#cbd5e1';
-    ctx.font = '500 22px sans-serif';
-    wrapText(ctx, subtitle, w / 2, h / 2 + 60, w - 60, 26);
-  }
-
-  const tex = new THREE.CanvasTexture(c);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  return tex;
-}
-
-function wrapText(ctx, text, x, y, maxWidth, lineHeight) {
+function wrapText(ctx, text, x, y, maxWidth, lineHeight, maxLines = 3) {
   const words = String(text).split(/\s+/);
   let line = '';
   const lines = [];
@@ -252,10 +458,37 @@ function wrapText(ctx, text, x, y, maxWidth, lineHeight) {
     }
   }
   if (line) lines.push(line);
-  // Limit to 3 lines so the canvas doesn't overflow
-  const shown = lines.slice(0, 3);
+  const shown = lines.slice(0, maxLines);
   const startY = y - ((shown.length - 1) * lineHeight) / 2;
   shown.forEach((ln, i) => ctx.fillText(ln, x, startY + i * lineHeight));
+}
+
+function makeLabelTexture({ title, subtitle, color = '#22c55e' }) {
+  const w = 512, h = 384;
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  const ctx = c.getContext('2d');
+  const grad = ctx.createLinearGradient(0, 0, 0, h);
+  grad.addColorStop(0, '#1f2937');
+  grad.addColorStop(1, '#0f172a');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, w, h);
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 10;
+  ctx.strokeRect(5, 5, w - 10, h - 10);
+  ctx.fillStyle = '#f8fafc';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.font = `italic 700 36px Georgia, serif`;
+  wrapText(ctx, title || '—', w / 2, h / 2 - 20, w - 60, 44, 2);
+  if (subtitle) {
+    ctx.fillStyle = '#cbd5e1';
+    ctx.font = '500 22px sans-serif';
+    wrapText(ctx, subtitle, w / 2, h / 2 + 60, w - 60, 26, 1);
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
 }
 
 function makeBackTexture(species) {
@@ -263,9 +496,7 @@ function makeBackTexture(species) {
   const c = document.createElement('canvas');
   c.width = w; c.height = h;
   const ctx = c.getContext('2d');
-
   const accent = cssColorForRank(species.rank);
-
   const grad = ctx.createLinearGradient(0, 0, w, h);
   grad.addColorStop(0, '#0f172a');
   grad.addColorStop(1, '#1f2937');
@@ -274,30 +505,92 @@ function makeBackTexture(species) {
   ctx.strokeStyle = accent;
   ctx.lineWidth = 8;
   ctx.strokeRect(4, 4, w - 8, h - 8);
-
   ctx.fillStyle = '#f8fafc';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.font = 'italic 700 38px Georgia, serif';
-  wrapText(ctx, species.name || '—', w / 2, 90, w - 60, 42);
-
+  wrapText(ctx, species.name || '—', w / 2, 90, w - 60, 42, 2);
   if (species.common) {
     ctx.fillStyle = '#cbd5e1';
     ctx.font = '500 22px sans-serif';
-    wrapText(ctx, species.common, w / 2, 160, w - 60, 26);
+    wrapText(ctx, species.common, w / 2, 160, w - 60, 26, 1);
   }
-
   ctx.fillStyle = accent;
   ctx.font = '700 18px sans-serif';
-  ctx.fillText(`${species.rank.toUpperCase()}`, w / 2, 220);
-
+  ctx.fillText(`${(species.rank || '').toUpperCase()}`, w / 2, 220);
   ctx.fillStyle = '#e2e8f0';
   ctx.font = '500 20px sans-serif';
   ctx.fillText(`${species.count} observation${species.count === 1 ? '' : 's'}`, w / 2, 260);
-
   ctx.fillStyle = '#94a3b8';
   ctx.font = '500 16px sans-serif';
-  ctx.fillText('Tap card front for full details →', w / 2, h - 38);
+  ctx.fillText('Tap to view details →', w / 2, h - 38);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+function makeGateSignTexture({ title, subtitle, accent, count }) {
+  const w = 512, h = 192;
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#0b1220';
+  ctx.fillRect(0, 0, w, h);
+  ctx.strokeStyle = accent;
+  ctx.lineWidth = 6;
+  ctx.strokeRect(3, 3, w - 6, h - 6);
+  ctx.fillStyle = '#f8fafc';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.font = '700 36px Georgia, serif';
+  wrapText(ctx, title || '—', w / 2, 60, w - 30, 40, 1);
+  if (subtitle) {
+    ctx.fillStyle = '#cbd5e1';
+    ctx.font = '500 22px sans-serif';
+    wrapText(ctx, subtitle, w / 2, 108, w - 40, 24, 1);
+  }
+  if (count != null) {
+    ctx.fillStyle = accent;
+    ctx.font = '700 22px sans-serif';
+    ctx.fillText(`${count} species ▸`, w / 2, h - 38);
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+function makeRoomPlinthTexture({ title, subtitle, accent, prefix }) {
+  const w = 768, h = 384;
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  const ctx = c.getContext('2d');
+  const grad = ctx.createLinearGradient(0, 0, 0, h);
+  grad.addColorStop(0, '#0f172a');
+  grad.addColorStop(1, '#1d2638');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, w, h);
+  ctx.strokeStyle = accent;
+  ctx.lineWidth = 8;
+  ctx.strokeRect(4, 4, w - 8, h - 8);
+
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+
+  if (prefix && prefix.length) {
+    ctx.fillStyle = '#94a3b8';
+    ctx.font = '500 22px sans-serif';
+    wrapText(ctx, prefix.join(' › '), w / 2, 50, w - 40, 26, 2);
+  }
+
+  ctx.fillStyle = '#f8fafc';
+  ctx.font = 'italic 800 56px Georgia, serif';
+  wrapText(ctx, title || '—', w / 2, h / 2 - 10, w - 60, 60, 2);
+
+  if (subtitle) {
+    ctx.fillStyle = '#cbd5e1';
+    ctx.font = '500 26px sans-serif';
+    wrapText(ctx, subtitle, w / 2, h / 2 + 80, w - 60, 32, 1);
+  }
 
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;
@@ -305,22 +598,25 @@ function makeBackTexture(species) {
 }
 
 // ---------------------------------------------------------------------------
-// Scene
+// HallwayScene
 // ---------------------------------------------------------------------------
 class HallwayScene {
   constructor(canvas, ctx) {
     this.canvas = canvas;
-    this.ctx = ctx; // { username, baseTaxonId, taxonName }
+    this.ctx = ctx;
     this.species = [];
-    this.bays = [];
-    this.cards = [];
-    this.bayInfo = []; // { z, label, color }
+    this.tree = null;
+    this.rooms = [];          // every room node in render order
+    this.cards = [];          // { group, flipGroup, frontMesh, backMesh, species, room, ... }
+    this.gates = [];          // { mesh, parentNode, childNode, position, normal }
+    this.waypoints = [];      // { position, yaw, kind, ref }
     this.disposeFns = [];
+
+    this._currentRoom = null;
     this._activeCard = null;
     this._locked = false;
     this._cameraTween = null;
     this._frameId = null;
-    this._lastCursorPick = null;
 
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false });
     this.renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
@@ -330,27 +626,33 @@ class HallwayScene {
 
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0x06070a);
-    this.scene.fog = new THREE.Fog(0x06070a, 16, 70);
+    this.scene.fog = new THREE.Fog(0x06070a, 18, 90);
 
-    this.camera = new THREE.PerspectiveCamera(72, 1, 0.1, 200);
-    this.camera.position.set(0, CAMERA_HEIGHT, ENTRY_DEPTH);
+    this.camera = new THREE.PerspectiveCamera(72, 1, 0.1, 400);
+    this.camera.position.set(0, CAMERA_HEIGHT, 6);
     this.camera.rotation.order = 'YXZ';
 
-    this.cardsGroup = new THREE.Group();
-    this.scene.add(this.cardsGroup);
     this.structureGroup = new THREE.Group();
     this.scene.add(this.structureGroup);
+    this.cardsGroup = new THREE.Group();
+    this.scene.add(this.cardsGroup);
+    // Raycasting uses direct arrays (this.cards / this.gates) — we do NOT
+    // re-parent meshes into a separate "interactives" group, because that
+    // would steal them from their flipGroup/gateGroup transforms.
 
     this.raycaster = new THREE.Raycaster();
     this.mouseNdc = new THREE.Vector2();
 
-    // Controls / input state
+    // Input state
     this.keys = new Set();
     this.yaw = 0;
     this.pitch = 0;
     this.dragging = false;
     this.lastMouse = { x: 0, y: 0 };
     this._dragTotal = 0;
+    this._pointerDownPos = null;
+    this._pointerDownTime = 0;
+    this._lastTap = null;     // { x, y, t } for double-tap detection
 
     this.clock = new THREE.Clock();
 
@@ -360,14 +662,11 @@ class HallwayScene {
   }
 
   _setupLights() {
-    const ambient = new THREE.AmbientLight(0xfff5e6, 0.35);
+    const ambient = new THREE.AmbientLight(0xfff5e6, 0.45);
     this.scene.add(ambient);
-
     const dir = new THREE.DirectionalLight(0xfff0d6, 0.45);
     dir.position.set(2, 8, 6);
     this.scene.add(dir);
-
-    // Hemisphere fill so the "ceiling" doesn't go pitch black
     const hemi = new THREE.HemisphereLight(0x8090a0, 0x101010, 0.35);
     this.scene.add(hemi);
   }
@@ -393,10 +692,12 @@ class HallwayScene {
     this.disposeFns.push(() => document.removeEventListener('keyup', onKeyUp));
 
     const onPointerDown = (e) => {
-      if (e.button !== 0) return;
+      if (e.button !== undefined && e.button !== 0) return;
       if (this._activeCard) return;
       this.dragging = true;
       this._dragTotal = 0;
+      this._pointerDownPos = { x: e.clientX, y: e.clientY };
+      this._pointerDownTime = performance.now();
       this.lastMouse.x = e.clientX;
       this.lastMouse.y = e.clientY;
       this.canvas.classList.add('is-dragging');
@@ -418,8 +719,22 @@ class HallwayScene {
       this.dragging = false;
       this.canvas.classList.remove('is-dragging');
       this.canvas.releasePointerCapture?.(e.pointerId);
-      if (wasDragging && this._dragTotal < 6 && !this._activeCard && !this._locked) {
-        this._handleClick(e);
+      if (!wasDragging || this._activeCard) return;
+      // Was it a tap? (not a drag)
+      if (this._dragTotal < TAP_DRAG_PX) {
+        const now = performance.now();
+        const x = e.clientX, y = e.clientY;
+        const prev = this._lastTap;
+        const isDouble = prev
+          && (now - prev.t) < DOUBLE_TAP_MS
+          && Math.hypot(prev.x - x, prev.y - y) < DOUBLE_TAP_PX;
+        if (isDouble) {
+          this._lastTap = null;
+          this._handleDoubleTap(x, y);
+        } else {
+          this._lastTap = { x, y, t: now };
+          this._handleSingleTap(x, y);
+        }
       }
     };
     this.canvas.addEventListener('pointerdown', onPointerDown);
@@ -435,7 +750,6 @@ class HallwayScene {
       const fwd = this._forwardVec();
       const step = -e.deltaY * 0.006;
       this.camera.position.addScaledVector(fwd, step);
-      this._clampCamera();
     };
     this.canvas.addEventListener('wheel', onWheel, { passive: false });
     this.disposeFns.push(() => this.canvas.removeEventListener('wheel', onWheel));
@@ -471,184 +785,493 @@ class HallwayScene {
     return new THREE.Vector3().crossVectors(fwd, new THREE.Vector3(0, 1, 0)).normalize();
   }
 
-  _clampCamera() {
-    const p = this.camera.position;
-    p.x = Math.max(-CORRIDOR_HALF_WIDTH + 0.5, Math.min(CORRIDOR_HALF_WIDTH - 0.5, p.x));
-    p.y = CAMERA_HEIGHT;
-    const back = ENTRY_DEPTH;
-    const far  = this._farthestZ();
-    p.z = Math.max(far + 1.0, Math.min(back, p.z));
-  }
-
-  _farthestZ() {
-    if (!this.bayInfo.length) return -2;
-    return this.bayInfo[this.bayInfo.length - 1].z - BAY_DEPTH;
-  }
-
   // -------------------------------------------------------------------------
-  // Build geometry
+  // Build pipeline
   // -------------------------------------------------------------------------
   async build(species) {
-    this.species = species.slice(0, MAX_CARDS);
-    this.bays = groupSpeciesIntoBays(this.species);
+    this.species = species;
 
-    const totalLength =
-      ENTRY_DEPTH +
-      this.bays.length * BAY_DEPTH +
-      Math.max(0, this.bays.length - 1) * BAY_GAP +
-      2.0;
+    // Gather every ancestor id we touch + the base
+    const ids = new Set([this.ctx.baseTaxonId]);
+    for (const s of species) for (const a of s.ancestors) ids.add(a);
+    const ancestorMeta = await fetchTaxaNames([...ids]);
 
-    this._buildCorridor(totalLength);
-    this._placeCards();
+    // Build, collapse, classify, layout
+    const rawRoot = buildRawTree(species, this.ctx.baseTaxonId, ancestorMeta);
+    if (!rawRoot) return;
+    const rendered = buildRenderedTree(rawRoot);
+    classifyTree(rendered);
+    layoutTree(rendered);
+    this.tree = rendered;
 
-    // Try to label bays with their shared ancestor's name. Fire and forget;
-    // labels are added to the HUD via a lookup map.
-    const ancIds = this.bays.map(b => b.sharedAncestorId).filter(Boolean);
-    const unique = [...new Set(ancIds)];
-    this._ancestorNames = {};
-    fetchTaxaNames(unique).then(map => {
-      this._ancestorNames = map;
-    }).catch(() => {});
+    // Collect all rooms for navigation + collision-free floor sizing
+    this.rooms = collectRoomNodes(rendered);
 
-    // Kick off async first-photo loads for the user's actual observations.
-    // Replaces the default-photo textures as they arrive.
+    // Build the world
+    this._buildWorld();
+    this._buildAllRooms();
+    this._buildAllConnectors();
+
+    // Enter the root room
+    this._currentRoom = rendered;
+    this._enterRoom(rendered, /*instant=*/true);
+
+    // Async load user's first-observation photos to populate card fronts.
     this._loadUserPhotos();
   }
 
-  _buildCorridor(totalLength) {
-    const startZ = ENTRY_DEPTH;
-    const endZ = startZ - totalLength;
+  _buildWorld() {
+    // Compute the overall footprint to size the floor + ceiling planes.
+    let min = new THREE.Vector3(Infinity, 0, Infinity);
+    let max = new THREE.Vector3(-Infinity, 0, -Infinity);
+    for (const r of this.rooms) {
+      min.x = Math.min(min.x, r.position.x);
+      min.z = Math.min(min.z, r.position.z);
+      max.x = Math.max(max.x, r.position.x);
+      max.z = Math.max(max.z, r.position.z);
+    }
+    if (!Number.isFinite(min.x)) { min.set(-1, 0, -1); max.set(1, 0, 1); }
+    const PAD = 14;
+    const cx = (min.x + max.x) / 2, cz = (min.z + max.z) / 2;
+    const w = Math.max(20, max.x - min.x + PAD * 2);
+    const d = Math.max(20, max.z - min.z + PAD * 2);
 
-    // Floor
-    const floorMat = new THREE.MeshStandardMaterial({
-      color: 0x2a2018,
-      roughness: 0.85,
-      metalness: 0.0
-    });
+    // Big ground plane
     const floor = new THREE.Mesh(
-      new THREE.PlaneGeometry(CORRIDOR_HALF_WIDTH * 2 + 0.4, totalLength + 4),
-      floorMat
+      new THREE.PlaneGeometry(w, d),
+      new THREE.MeshStandardMaterial({ color: 0x1c1610, roughness: 0.95, metalness: 0.0 })
     );
     floor.rotation.x = -Math.PI / 2;
-    floor.position.set(0, 0, (startZ + endZ) / 2);
+    floor.position.set(cx, 0, cz);
     this.structureGroup.add(floor);
+    this._floorPlane = floor;
 
-    // Ceiling
-    const ceilMat = new THREE.MeshStandardMaterial({
-      color: 0x0a0a14,
-      roughness: 1.0
-    });
-    const ceiling = new THREE.Mesh(
-      new THREE.PlaneGeometry(CORRIDOR_HALF_WIDTH * 2 + 0.4, totalLength + 4),
-      ceilMat
-    );
-    ceiling.rotation.x = Math.PI / 2;
-    ceiling.position.set(0, WALL_HEIGHT, (startZ + endZ) / 2);
-    this.structureGroup.add(ceiling);
+    // Track total bounds for clamping
+    this._worldBounds = { min, max, w, d, cx, cz };
+  }
 
-    // Walls (left/right)
-    const wallMat = new THREE.MeshStandardMaterial({
-      color: 0x252836,
-      roughness: 0.9
-    });
-    const wallGeo = new THREE.PlaneGeometry(totalLength + 4, WALL_HEIGHT);
-
-    const wallLeft = new THREE.Mesh(wallGeo, wallMat);
-    wallLeft.rotation.y = Math.PI / 2;
-    wallLeft.position.set(-CORRIDOR_HALF_WIDTH, WALL_HEIGHT / 2, (startZ + endZ) / 2);
-    this.structureGroup.add(wallLeft);
-
-    const wallRight = new THREE.Mesh(wallGeo.clone(), wallMat);
-    wallRight.rotation.y = -Math.PI / 2;
-    wallRight.position.set(CORRIDOR_HALF_WIDTH, WALL_HEIGHT / 2, (startZ + endZ) / 2);
-    this.structureGroup.add(wallRight);
-
-    // Far back wall (cap)
-    const cap = new THREE.Mesh(
-      new THREE.PlaneGeometry(CORRIDOR_HALF_WIDTH * 2, WALL_HEIGHT),
-      new THREE.MeshStandardMaterial({ color: 0x12141c, roughness: 1.0 })
-    );
-    cap.position.set(0, WALL_HEIGHT / 2, endZ - 0.5);
-    this.structureGroup.add(cap);
-
-    // Lights along corridor — gallery-style point lights
-    const lightSpacing = BAY_DEPTH;
-    for (let z = startZ - 1; z > endZ; z -= lightSpacing) {
-      const light = new THREE.PointLight(0xffe6b8, 1.1, 9, 1.6);
-      light.position.set(0, WALL_HEIGHT - 0.25, z);
-      this.scene.add(light);
+  _buildAllRooms() {
+    for (const r of this.rooms) {
+      if (r.roomType === 'junction')   this._buildJunctionRoom(r);
+      else if (r.roomType === 'gallery')  this._buildGalleryRoom(r);
+      else if (r.roomType === 'pedestal') this._buildPedestalRoom(r);
     }
   }
 
-  _placeCards() {
-    let z = ENTRY_DEPTH - 1.0; // first bay starts here
-    this.bayInfo = [];
+  // Position helper: rotate a local-XZ offset into world space using node.forward.
+  _toWorld(node, localX, localZ) {
+    // Node's local axes:
+    //   local +Z (forward) = node.forward
+    //   local +X (right)   = node.forward rotated -90° around Y (i.e., y-cross-forward)
+    const f = node.forward;
+    const rx = -f.z, rz = f.x; // (right vector = (-fz, 0, fx))
+    return new THREE.Vector3(
+      node.position.x + localX * rx + localZ * f.x,
+      0,
+      node.position.z + localX * rz + localZ * f.z
+    );
+  }
 
-    this.bays.forEach((bay, bayIdx) => {
-      const bayStartZ = z;
-      const bayEndZ = bayStartZ - BAY_DEPTH;
+  _addPillars(node, halfW, halfD) {
+    const tint = colorForRank(node.rank);
+    const pillarMat = new THREE.MeshStandardMaterial({
+      color: 0xd4cfb8,
+      roughness: 0.6,
+      metalness: 0.05
+    });
+    const capMat = new THREE.MeshStandardMaterial({
+      color: tint, emissive: tint, emissiveIntensity: 0.3, roughness: 0.4
+    });
+    const corners = [
+      [-halfW, -halfD], [+halfW, -halfD],
+      [+halfW, +halfD], [-halfW, +halfD]
+    ];
+    for (const [lx, lz] of corners) {
+      const p = this._toWorld(node, lx, lz);
+      const col = new THREE.Mesh(
+        new THREE.CylinderGeometry(PILLAR_RADIUS, PILLAR_RADIUS, PILLAR_HEIGHT, 12),
+        pillarMat
+      );
+      col.position.set(p.x, PILLAR_HEIGHT / 2, p.z);
+      this.structureGroup.add(col);
+      const cap = new THREE.Mesh(
+        new THREE.CylinderGeometry(PILLAR_RADIUS * 1.7, PILLAR_RADIUS * 1.3, 0.2, 12),
+        capMat
+      );
+      cap.position.set(p.x, PILLAR_HEIGHT + 0.05, p.z);
+      this.structureGroup.add(cap);
+    }
+  }
 
-      // Rank color of bay (based on shared ancestor's species, or last species' rank fallback)
-      const repRank = bay.species[0]?.rank || 'species';
-      const accentHex = colorForRank(repRank);
+  _addRoomFloor(node, w, d, tintHex) {
+    const accent = tintHex ?? colorForRank(node.rank);
+    const mat = new THREE.MeshStandardMaterial({
+      color: 0x232a3a, roughness: 0.7, metalness: 0.0
+    });
+    const floor = new THREE.Mesh(new THREE.PlaneGeometry(w, d), mat);
+    floor.rotation.x = -Math.PI / 2;
+    floor.position.set(node.position.x, 0.01, node.position.z);
+    // Orient floor's local axes with the room's forward
+    const angle = Math.atan2(node.forward.x, node.forward.z);
+    floor.rotation.z = -angle; // counter-rotate plane after x-rotation
+    this.structureGroup.add(floor);
 
-      // Top accent stripe (visible from inside corridor)
-      const stripeMat = new THREE.MeshStandardMaterial({
-        color: accentHex,
-        emissive: accentHex,
-        emissiveIntensity: 0.35,
-        roughness: 0.4
-      });
-      const stripeGeo = new THREE.BoxGeometry(0.1, 0.12, BAY_DEPTH - 0.2);
+    // Rank-colored inlay strip along the room boundary
+    const inlay = new THREE.Mesh(
+      new THREE.PlaneGeometry(w - 0.4, d - 0.4),
+      new THREE.MeshStandardMaterial({
+        color: 0x2c3447, roughness: 0.6, metalness: 0.0,
+        emissive: accent, emissiveIntensity: 0.06
+      })
+    );
+    inlay.rotation.x = -Math.PI / 2;
+    inlay.position.set(node.position.x, 0.02, node.position.z);
+    inlay.rotation.z = -angle;
+    this.structureGroup.add(inlay);
+  }
 
-      const stripeL = new THREE.Mesh(stripeGeo, stripeMat);
-      stripeL.position.set(-CORRIDOR_HALF_WIDTH + 0.06, WALL_HEIGHT - 0.25, (bayStartZ + bayEndZ) / 2);
-      this.structureGroup.add(stripeL);
+  _addRoomLight(node, intensity = 1.0) {
+    const light = new THREE.PointLight(0xffe6b8, intensity, 16, 1.6);
+    light.position.set(node.position.x, WALL_HEIGHT - 0.15, node.position.z);
+    this.scene.add(light);
+  }
 
-      const stripeR = new THREE.Mesh(stripeGeo.clone(), stripeMat);
-      stripeR.position.set(CORRIDOR_HALF_WIDTH - 0.06, WALL_HEIGHT - 0.25, (bayStartZ + bayEndZ) / 2);
-      this.structureGroup.add(stripeR);
+  _addRoomSign(node) {
+    const halfW = (this._roomSize(node).w) / 2;
+    const halfD = (this._roomSize(node).d) / 2;
 
-      // Place cards in this bay
-      const slotZs = [];
-      for (let i = 0; i < CARDS_PER_BAY_SIDE; i++) {
-        const t = (i + 0.5) / CARDS_PER_BAY_SIDE;
-        slotZs.push(bayStartZ - 0.3 - t * (BAY_DEPTH - 0.6));
-      }
-      let cardIdx = 0;
-      for (let side = 0; side < 2; side++) {
-        const sign = side === 0 ? -1 : 1; // -1 = left wall
-        for (let i = 0; i < CARDS_PER_BAY_SIDE; i++) {
-          const sp = bay.species[cardIdx++];
-          if (!sp) continue;
-          const cardZ = slotZs[i];
-          const card = this._makeCard(sp);
-          card.group.position.set(sign * (CORRIDOR_HALF_WIDTH - 0.04), CARD_Y, cardZ);
-          card.group.rotation.y = sign === -1 ? Math.PI / 2 : -Math.PI / 2;
-          // Front-face world normal (points into corridor when unflipped)
-          card.frontNormal = new THREE.Vector3(-sign, 0, 0);
-          this.cardsGroup.add(card.group);
-          this.cards.push(card);
-        }
-      }
+    const accent = cssColorForRank(node.rank);
+    const subtitle = node.common
+      ? `${capitalize(node.rank || 'taxon')}${node.common ? ` · ${node.common}` : ''}`
+      : capitalize(node.rank || 'taxon');
+    const tex = makeRoomPlinthTexture({
+      title: node.name,
+      subtitle,
+      accent,
+      prefix: node.pathPrefix
+    });
+    const plane = new THREE.Mesh(
+      new THREE.PlaneGeometry(2.4, 1.2),
+      new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide, transparent: true })
+    );
+    // Hang the sign overhead at the far end of the room (local +Z = the
+    // node.forward side). The plane is double-sided so it's readable from
+    // both the entrance and the inside as the player walks deeper in.
+    const farLocal = +halfD - 0.25;
+    const pos = this._toWorld(node, 0, farLocal);
+    plane.position.set(pos.x, 2.7, pos.z);
+    plane.lookAt(node.position.x, 2.7, node.position.z);
+    this.structureGroup.add(plane);
+  }
 
-      this.bayInfo.push({
-        z: bayStartZ,
-        sharedAncestorId: bay.sharedAncestorId,
-        color: cssColorForRank(repRank)
-      });
+  _roomSize(node) {
+    if (node.roomType === 'gallery')  return { w: GALLERY_WIDTH, d: GALLERY_DEPTH };
+    if (node.roomType === 'pedestal') return { w: PEDESTAL_SIZE, d: PEDESTAL_SIZE };
+    return { w: ROOM_WIDTH, d: ROOM_DEPTH };
+  }
 
-      z = bayEndZ - BAY_GAP;
+  _buildJunctionRoom(node) {
+    const { w, d } = this._roomSize(node);
+    const halfW = w / 2, halfD = d / 2;
+
+    this._addRoomFloor(node, w + 0.6, d + 0.6);
+    this._addPillars(node, halfW + 0.2, halfD + 0.2);
+    this._addRoomLight(node, 1.0);
+    this._addRoomSign(node);
+
+    // Place each gate just outside the parent room's edge in the world-space
+    // direction of its corresponding child. This guarantees gate-to-child
+    // alignment regardless of the fan angle, and keeps gates visible from the
+    // room's entrance.
+    const subs = node.children.filter(c => c.roomType !== 'leaf');
+    for (const child of subs) {
+      const dirToChild = new THREE.Vector3(
+        child.position.x - node.position.x, 0,
+        child.position.z - node.position.z
+      ).normalize();
+      const gateWorld = node.position.clone().addScaledVector(dirToChild, halfD + 0.6);
+      this._addGate(node, child, gateWorld, dirToChild);
+    }
+
+    // Waypoints for this room: center
+    this.waypoints.push({
+      position: new THREE.Vector3(node.position.x, CAMERA_HEIGHT, node.position.z),
+      yaw: Math.atan2(node.forward.x, node.forward.z) + Math.PI, // looking toward forward
+      kind: 'room',
+      ref: node
     });
   }
 
+  _buildGalleryRoom(node) {
+    const { w, d } = this._roomSize(node);
+    const halfW = w / 2, halfD = d / 2;
+
+    this._addRoomFloor(node, w + 0.6, d + 0.6);
+    this._addPillars(node, halfW + 0.2, halfD + 0.2);
+    this._addRoomLight(node, 1.05);
+    this._addRoomSign(node);
+
+    const leaves = node._cards || [];
+    // Lay out cards along left + right walls; if more than fits, also use the front wall.
+    const perSide = 3;
+    const leftCount = Math.min(perSide, leaves.length);
+    const rightCount = Math.min(perSide, Math.max(0, leaves.length - perSide));
+    const frontCount = Math.max(0, leaves.length - 2 * perSide);
+
+    let idx = 0;
+    const placeCard = (sp, sideSign, slotIdx, slotsTotal, axis) => {
+      // axis: 'side' for left/right walls (varying along Z), 'front' for front wall (varying along X)
+      let lx, lz, normalLocal;
+      if (axis === 'side') {
+        const t = slotsTotal === 1 ? 0.5 : (slotIdx + 0.5) / slotsTotal;
+        lx = sideSign * (halfW - 0.05);
+        lz = (-halfD + 0.5) + t * (d - 1.0);
+        normalLocal = new THREE.Vector3(-sideSign, 0, 0); // local normal points into room
+      } else {
+        // Far wall (opposite the entrance): local +Z is node.forward
+        // direction, so the wall sits at local z = +halfD. Card normal
+        // points back toward room center (local -Z).
+        const t = slotsTotal === 1 ? 0.5 : (slotIdx + 0.5) / slotsTotal;
+        lx = (-halfW + 0.6) + t * (w - 1.2);
+        lz = +halfD - 0.05;
+        normalLocal = new THREE.Vector3(0, 0, -1);
+      }
+      this._spawnWallCard(node, sp, lx, lz, normalLocal);
+    };
+
+    for (let i = 0; i < leftCount; i++) placeCard(leaves[idx++], -1, i, leftCount, 'side');
+    for (let i = 0; i < rightCount; i++) placeCard(leaves[idx++], +1, i, rightCount, 'side');
+    for (let i = 0; i < frontCount; i++) placeCard(leaves[idx++], 0, i, frontCount, 'front');
+
+    // Waypoint at room center
+    this.waypoints.push({
+      position: new THREE.Vector3(node.position.x, CAMERA_HEIGHT, node.position.z),
+      yaw: Math.atan2(node.forward.x, node.forward.z) + Math.PI,
+      kind: 'room',
+      ref: node
+    });
+  }
+
+  _buildPedestalRoom(node) {
+    const { w, d } = this._roomSize(node);
+    const halfW = w / 2, halfD = d / 2;
+
+    this._addRoomFloor(node, w + 0.4, d + 0.4);
+    this._addPillars(node, halfW + 0.1, halfD + 0.1);
+    this._addRoomSign(node);
+
+    // Tall spotlight from above
+    const spot = new THREE.SpotLight(0xfff2c8, 14.0, 12, Math.PI / 5, 0.35, 1.6);
+    spot.position.set(node.position.x, 3.6, node.position.z);
+    spot.target.position.set(node.position.x, 1.0, node.position.z);
+    this.scene.add(spot);
+    this.scene.add(spot.target);
+
+    // Plinth in the center
+    const plinthH = 1.0;
+    const plinth = new THREE.Mesh(
+      new THREE.BoxGeometry(1.0, plinthH, 1.0),
+      new THREE.MeshStandardMaterial({ color: 0x2f3a52, roughness: 0.5, metalness: 0.1 })
+    );
+    plinth.position.set(node.position.x, plinthH / 2, node.position.z);
+    this.structureGroup.add(plinth);
+
+    const accentCap = new THREE.Mesh(
+      new THREE.BoxGeometry(1.05, 0.06, 1.05),
+      new THREE.MeshStandardMaterial({
+        color: colorForRank(node.rank),
+        emissive: colorForRank(node.rank),
+        emissiveIntensity: 0.5,
+        roughness: 0.4
+      })
+    );
+    accentCap.position.set(node.position.x, plinthH + 0.03, node.position.z);
+    this.structureGroup.add(accentCap);
+
+    // The single species card sits on top, facing the entrance (-node.forward)
+    const sp = (node._cards && node._cards[0]) || null;
+    if (sp) {
+      const card = this._makeCard(sp);
+      card.group.position.set(node.position.x, plinthH + 0.55, node.position.z);
+      // The card faces back toward the entrance (-node.forward)
+      const ang = Math.atan2(-node.forward.x, -node.forward.z);
+      card.group.rotation.y = ang;
+      card.frontNormal = new THREE.Vector3(-node.forward.x, 0, -node.forward.z);
+      card.room = node;
+      this.cardsGroup.add(card.group);
+      this.cards.push(card);
+    }
+
+    // Waypoint: stand at the entrance side facing the pedestal
+    const wpLocal = this._toWorld(node, 0, +halfD - 0.5);
+    this.waypoints.push({
+      position: new THREE.Vector3(wpLocal.x, CAMERA_HEIGHT, wpLocal.z),
+      yaw: Math.atan2(node.forward.x, node.forward.z) + Math.PI,
+      kind: 'room',
+      ref: node
+    });
+  }
+
+  _spawnWallCard(node, sp, localX, localZ, normalLocal) {
+    const card = this._makeCard(sp);
+    const world = this._toWorld(node, localX, localZ);
+    card.group.position.set(world.x, CARD_Y, world.z);
+
+    // Rotate world from local normal:
+    // local +X (right) world dir = (-fz, 0, fx); local +Z (forward) = (fx, 0, fz)
+    const fx = node.forward.x, fz = node.forward.z;
+    const worldNormal = new THREE.Vector3(
+      normalLocal.x * (-fz) + normalLocal.z * fx,
+      0,
+      normalLocal.x * fx + normalLocal.z * fz
+    ).normalize();
+    const ang = Math.atan2(worldNormal.x, worldNormal.z);
+    card.group.rotation.y = ang;
+    card.frontNormal = worldNormal;
+    card.room = node;
+    this.cardsGroup.add(card.group);
+    this.cards.push(card);
+  }
+
+  _addGate(parent, child, gateWorld, dirToChild) {
+    // Build a freestanding doorway-arch: two vertical pillars + a top beam +
+    // a label sign + a clickable, slightly translucent fill.
+    const world = gateWorld;
+    const accent = colorForRank(child.rank);
+    const accentCss = cssColorForRank(child.rank);
+
+    const gateGroup = new THREE.Group();
+    gateGroup.position.set(world.x, 0, world.z);
+    // Orient the gate's local +Z so it points TOWARD the child (so the player
+    // walking through it heads in the right direction). The label/back side
+    // (+Z after the internal π-rotation below) then faces back into the parent.
+    const gateAngle = Math.atan2(dirToChild.x, dirToChild.z);
+    gateGroup.rotation.y = gateAngle;
+
+    const pillarMat = new THREE.MeshStandardMaterial({
+      color: 0xb8b4a0, roughness: 0.5, metalness: 0.1
+    });
+    const pillarGeom = new THREE.BoxGeometry(0.18, GATE_H, 0.18);
+    const pL = new THREE.Mesh(pillarGeom, pillarMat);
+    pL.position.set(-GATE_W / 2, GATE_H / 2, 0);
+    gateGroup.add(pL);
+    const pR = new THREE.Mesh(pillarGeom.clone(), pillarMat);
+    pR.position.set(+GATE_W / 2, GATE_H / 2, 0);
+    gateGroup.add(pR);
+
+    // Top beam with rank accent
+    const beam = new THREE.Mesh(
+      new THREE.BoxGeometry(GATE_W + 0.4, 0.3, 0.25),
+      new THREE.MeshStandardMaterial({
+        color: accent, emissive: accent, emissiveIntensity: 0.55, roughness: 0.45
+      })
+    );
+    beam.position.set(0, GATE_H + 0.15, 0);
+    gateGroup.add(beam);
+
+    // Sign above the beam: child name + species count
+    const signTex = makeGateSignTexture({
+      title: child.name,
+      subtitle: child.rank ? capitalize(child.rank) : '',
+      accent: accentCss,
+      count: child.speciesUnder
+    });
+    const sign = new THREE.Mesh(
+      new THREE.PlaneGeometry(GATE_W + 0.6, 0.7),
+      new THREE.MeshBasicMaterial({ map: signTex, side: THREE.DoubleSide, transparent: true })
+    );
+    sign.position.set(0, GATE_H + 0.7, 0.0);
+    // Label faces back into the parent room (its -Z local)
+    sign.rotation.y = Math.PI;
+    gateGroup.add(sign);
+
+    // The clickable face: a translucent panel inside the arch
+    const fill = new THREE.Mesh(
+      new THREE.PlaneGeometry(GATE_W - 0.05, GATE_H - 0.2),
+      new THREE.MeshBasicMaterial({
+        color: accent, transparent: true, opacity: 0.10, side: THREE.DoubleSide
+      })
+    );
+    fill.position.set(0, (GATE_H - 0.2) / 2 + 0.1, 0);
+    gateGroup.add(fill);
+
+    this.structureGroup.add(gateGroup);
+
+    this.gates.push({
+      mesh: fill,
+      parentNode: parent,
+      childNode: child,
+      position: new THREE.Vector3(world.x, 0, world.z),
+      directionToChild: dirToChild
+    });
+
+    // Waypoint: just inside the parent looking at the gate (so user can fly to it)
+    const standoff = new THREE.Vector3(world.x, CAMERA_HEIGHT, world.z)
+      .addScaledVector(dirToChild, -1.6);
+    this.waypoints.push({
+      position: standoff,
+      yaw: Math.atan2(dirToChild.x, dirToChild.z) + Math.PI,
+      kind: 'gate',
+      ref: { parentNode: parent, childNode: child }
+    });
+  }
+
+  _buildAllConnectors() {
+    function walk(n, scene) {
+      if (!n.children) return;
+      for (const c of n.children) {
+        if (c.roomType === 'leaf') continue;
+        scene._buildConnector(n, c);
+        walk(c, scene);
+      }
+    }
+    walk(this.tree, this);
+  }
+
+  _buildConnector(parent, child) {
+    // A lit floor strip from parent's edge to child's edge along the
+    // (child.position - parent.position) line.
+    const a = parent.position;
+    const b = child.position;
+    const dir = new THREE.Vector3(b.x - a.x, 0, b.z - a.z).normalize();
+    const fullLen = a.distanceTo(b);
+    const parentHalfD = this._roomSize(parent).d / 2;
+    const childHalfD  = this._roomSize(child).d / 2;
+    // Strip starts just outside parent's front wall and ends just outside child's back wall.
+    const startGap = parentHalfD;
+    const endGap   = childHalfD;
+    const segLen = Math.max(0.5, fullLen - startGap - endGap);
+    const cx = (a.x + dir.x * (startGap + segLen / 2));
+    const cz = (a.z + dir.z * (startGap + segLen / 2));
+    const accent = colorForRank(child.rank);
+
+    const strip = new THREE.Mesh(
+      new THREE.PlaneGeometry(1.8, segLen),
+      new THREE.MeshStandardMaterial({
+        color: 0x2a3344, roughness: 0.85,
+        emissive: accent, emissiveIntensity: 0.08
+      })
+    );
+    strip.rotation.x = -Math.PI / 2;
+    strip.position.set(cx, 0.015, cz);
+    // Orient the long axis of the strip with `dir`
+    strip.rotation.z = -Math.atan2(dir.x, dir.z);
+    this.structureGroup.add(strip);
+
+    // Tiny rank-accent ring at the midpoint to read direction at a glance
+    const dot = new THREE.Mesh(
+      new THREE.RingGeometry(0.18, 0.28, 16),
+      new THREE.MeshBasicMaterial({ color: accent, side: THREE.DoubleSide, transparent: true, opacity: 0.85 })
+    );
+    dot.rotation.x = -Math.PI / 2;
+    dot.position.set(cx, 0.03, cz);
+    this.structureGroup.add(dot);
+  }
+
+  // -------------------------------------------------------------------------
+  // Card creation (front photo + back canvas)
+  // -------------------------------------------------------------------------
   _makeCard(species) {
-    // Outer group: positions + orients on a wall (rotation.y = ±π/2).
-    // Inner group: handles the flip animation around its own Y axis.
-    // Because inner is parented to outer, its local Y axis stays aligned
-    // with world +Y after outer's pure-Y rotation, so spinning inner around
-    // its Y axis flips the card around a vertical axis — like turning over
-    // a postcard hanging on the wall.
     const group = new THREE.Group();
     const flipGroup = new THREE.Group();
     group.add(flipGroup);
@@ -662,14 +1285,10 @@ class HallwayScene {
     const backTex = makeBackTexture(species);
 
     const frontMat = new THREE.MeshStandardMaterial({
-      map: placeholderTex,
-      roughness: 0.6,
-      metalness: 0.0
+      map: placeholderTex, roughness: 0.6, metalness: 0.0
     });
     const backMat = new THREE.MeshStandardMaterial({
-      map: backTex,
-      roughness: 0.6,
-      metalness: 0.0
+      map: backTex, roughness: 0.6, metalness: 0.0
     });
 
     const geo = new THREE.PlaneGeometry(CARD_W, CARD_H);
@@ -679,7 +1298,6 @@ class HallwayScene {
     back.rotation.y = Math.PI;
     back.position.z = -0.002;
 
-    // Frame: a thin colored box behind the card
     const frameDepth = 0.06;
     const frame = new THREE.Mesh(
       new THREE.BoxGeometry(CARD_W + 0.06, CARD_H + 0.06, frameDepth),
@@ -696,6 +1314,9 @@ class HallwayScene {
     flipGroup.add(front);
     flipGroup.add(back);
 
+    // For raycasting, mark the front mesh's userData with a back-ref to the card
+    front.userData.kind = 'card';
+
     return {
       group,
       flipGroup,
@@ -707,21 +1328,20 @@ class HallwayScene {
       flipT: 0,
       flipFrom: 0,
       flipTo: 0,
-      _placeholderTex: placeholderTex
+      _placeholderTex: placeholderTex,
+      room: null,
+      frontNormal: new THREE.Vector3(0, 0, 1)
     };
   }
 
-  // -------------------------------------------------------------------------
-  // Async photo loading for user's first observation
-  // -------------------------------------------------------------------------
   async _loadUserPhotos() {
     const username = this.ctx.username;
-    let concurrency = 6;
-    let idx = 0;
     const cards = this.cards;
     const getFirstObs = window.getFirstObs;
+    let idx = 0;
+    const concurrency = 6;
 
-    const worker = async () => {
+    const work = async () => {
       while (idx < cards.length) {
         const myIdx = idx++;
         const card = cards[myIdx];
@@ -738,16 +1358,13 @@ class HallwayScene {
           if (!url) continue;
           const tex = await loadTexture(url);
           if (tex && card.frontMesh) {
-            // The plane is wider than tall; if the photo is portrait, fit it without distortion
             tex.center.set(0.5, 0.5);
             const aspect = (tex.image?.width || 1) / (tex.image?.height || 1);
             const target = CARD_W / CARD_H;
             if (aspect > target) {
-              // wider than card → crop sides
               tex.repeat.set(target / aspect, 1);
               tex.offset.set((1 - target / aspect) / 2, 0);
             } else {
-              // taller than card → crop top/bottom
               tex.repeat.set(1, aspect / target);
               tex.offset.set(0, (1 - aspect / target) / 2);
             }
@@ -756,12 +1373,11 @@ class HallwayScene {
             card.frontMesh.material.needsUpdate = true;
           }
         } catch {}
-        // tiny gap to keep the UI responsive
         await new Promise(r => setTimeout(r, 10));
       }
     };
     const workers = [];
-    for (let i = 0; i < concurrency; i++) workers.push(worker());
+    for (let i = 0; i < concurrency; i++) workers.push(work());
     Promise.all(workers).catch(() => {});
   }
 
@@ -786,13 +1402,13 @@ class HallwayScene {
   }
 
   _tick(dt) {
-    // Camera rotation from yaw/pitch
+    // Update camera from yaw/pitch
     this.camera.rotation.y = this.yaw;
     this.camera.rotation.x = this.pitch;
 
-    // Movement (WASD / arrow keys) — disabled while a card is open
-    if (!this._activeCard) {
-      const speed = (this.keys.has('ShiftLeft') || this.keys.has('ShiftRight')) ? 7.0 : 3.5;
+    // WASD movement (unless a card is open or we're tweening)
+    if (!this._activeCard && !this._cameraTween) {
+      const speed = (this.keys.has('ShiftLeft') || this.keys.has('ShiftRight')) ? 8.0 : 4.0;
       const fwd = this._forwardVec();
       const right = this._rightVec();
       const move = new THREE.Vector3();
@@ -803,11 +1419,11 @@ class HallwayScene {
       if (move.lengthSq() > 0) {
         move.normalize().multiplyScalar(speed * dt);
         this.camera.position.add(move);
-        this._clampCamera();
+        this.camera.position.y = CAMERA_HEIGHT;
       }
     }
 
-    // Camera tween toward a focused card
+    // Camera tween
     if (this._cameraTween) {
       const ct = this._cameraTween;
       ct.t += dt / ct.duration;
@@ -816,10 +1432,15 @@ class HallwayScene {
       this.camera.position.lerpVectors(ct.fromPos, ct.toPos, e);
       this.yaw   = lerpAngle(ct.fromYaw, ct.toYaw, e);
       this.pitch = lerpNum(ct.fromPitch, ct.toPitch, e);
-      if (k >= 1) this._cameraTween = null;
+      if (k >= 1) {
+        this._cameraTween = null;
+        if (ct.afterRoom) {
+          this._setCurrentRoom(ct.afterRoom);
+        }
+      }
     }
 
-    // Card flip animations — rotate the inner flipGroup around its Y axis.
+    // Card flip
     for (const c of this.cards) {
       if (!c.flipping) continue;
       c.flipT += dt / 0.55;
@@ -833,81 +1454,220 @@ class HallwayScene {
       }
     }
 
-    this._updateHud();
-  }
-
-  _updateHud() {
-    if (!this.bayInfo.length) return;
-    const z = this.camera.position.z;
-    let bestIdx = 0;
-    let bestDist = Infinity;
-    for (let i = 0; i < this.bayInfo.length; i++) {
-      const d = Math.abs(this.bayInfo[i].z - BAY_DEPTH / 2 - z);
-      if (d < bestDist) { bestDist = d; bestIdx = i; }
+    // Update HUD breadcrumb periodically based on nearest room
+    if (!this._activeCard && !this._cameraTween) {
+      this._maybeUpdateCurrentRoomByProximity();
     }
-    const bay = this.bayInfo[bestIdx];
-    const titleEl = document.getElementById('hallwayHudTitle');
-    const subEl = document.getElementById('hallwayHudSub');
-    if (!titleEl || !subEl) return;
+  }
 
-    const anc = this._ancestorNames?.[bay.sharedAncestorId];
-    const total = this.species.length;
-    const cardsBefore = bestIdx * CARDS_PER_BAY;
-    const cardsInBay = this.bays[bestIdx]?.species?.length || 0;
+  _maybeUpdateCurrentRoomByProximity() {
+    if (!this.rooms.length) return;
+    const cp = this.camera.position;
+    let best = null, bestD = Infinity;
+    for (const r of this.rooms) {
+      const dx = r.position.x - cp.x, dz = r.position.z - cp.z;
+      const d = dx * dx + dz * dz;
+      if (d < bestD) { bestD = d; best = r; }
+    }
+    if (best && best !== this._currentRoom) this._setCurrentRoom(best);
+  }
 
-    const label = anc
-      ? `${anc.rank ? capitalize(anc.rank) + ' ' : ''}${anc.name}${anc.common ? ` (${anc.common})` : ''}`
-      : `Bay ${bestIdx + 1} of ${this.bays.length}`;
-    titleEl.textContent = label;
-    titleEl.style.borderLeft = `4px solid ${bay.color}`;
-    titleEl.style.paddingLeft = '10px';
-    subEl.textContent =
-      `Species ${cardsBefore + 1}–${cardsBefore + cardsInBay} of ${total} · ${this.ctx.username} @ ${this.ctx.taxonName}`;
+  _setCurrentRoom(node) {
+    this._currentRoom = node;
+    this._updateBreadcrumb(node);
+    this._updateHud(node);
+  }
+
+  _updateHud(node) {
+    const title = document.getElementById('hallwayHudTitle');
+    const sub = document.getElementById('hallwayHudSub');
+    if (!title || !sub) return;
+    const color = cssColorForRank(node.rank);
+    title.textContent = chunkLabel(node) || node.name;
+    title.style.borderLeft = `4px solid ${color}`;
+    title.style.paddingLeft = '10px';
+    const typeLabel = ({
+      junction: `${node.children.length} sub-taxa`,
+      gallery:  `${(node._cards || []).length} species`,
+      pedestal: `1 species`
+    })[node.roomType] || '';
+    sub.textContent = `${typeLabel} · ${this.ctx.username} @ ${this.ctx.taxonName}`;
+  }
+
+  _updateBreadcrumb(node) {
+    const el = document.getElementById('hallwayBreadcrumb');
+    if (!el) return;
+    el.innerHTML = '';
+    const segs = buildBreadcrumb(node);
+    segs.forEach((seg, i) => {
+      if (i > 0) {
+        const sep = document.createElement('span');
+        sep.className = 'hallway-breadcrumb-sep';
+        sep.textContent = '›';
+        el.appendChild(sep);
+      }
+      const item = document.createElement(seg.nodeId != null ? 'button' : 'span');
+      item.className = 'hallway-breadcrumb-item';
+      if (i === segs.length - 1) item.classList.add('is-current');
+      item.textContent = seg.label;
+      if (seg.nodeId != null) {
+        item.dataset.nodeId = String(seg.nodeId);
+        item.title = 'Fly to this room';
+        item.addEventListener('click', () => {
+          const target = this._findRoomById(seg.nodeId);
+          if (target) this._enterRoom(target);
+        });
+      }
+      el.appendChild(item);
+    });
+  }
+
+  _findRoomById(id) {
+    for (const r of this.rooms) if (r.id === id) return r;
+    return null;
   }
 
   // -------------------------------------------------------------------------
-  // Click → flip card → open detail panel
+  // Navigation
   // -------------------------------------------------------------------------
-  _handleClick(e) {
+  _enterRoom(node, instant = false) {
+    // Land just inside the room facing toward node.forward (so the player sees
+    // its features straight ahead).
+    const f = node.forward;
+    const standoff = node.position.clone().addScaledVector(f, -this._roomSize(node).d * 0.35);
+    const yaw = Math.atan2(f.x, f.z) + Math.PI;
+    if (instant) {
+      this.camera.position.set(standoff.x, CAMERA_HEIGHT, standoff.z);
+      this.yaw = yaw;
+      this.pitch = 0;
+      this._setCurrentRoom(node);
+    } else {
+      this._tweenCamera(
+        new THREE.Vector3(standoff.x, CAMERA_HEIGHT, standoff.z),
+        yaw,
+        0,
+        0.7,
+        node
+      );
+    }
+  }
+
+  _tweenCamera(toPos, toYaw, toPitch, duration, afterRoom = null) {
+    this._cameraTween = {
+      fromPos: this.camera.position.clone(),
+      toPos,
+      fromYaw: this.yaw,
+      toYaw,
+      fromPitch: this.pitch,
+      toPitch,
+      t: 0,
+      duration,
+      afterRoom
+    };
+  }
+
+  _handleSingleTap(x, y) {
+    if (this._activeCard) return;
+    const hit = this._pickInteractive(x, y);
+    if (!hit) return;
+    if (hit.kind === 'gate') {
+      const child = hit.gate.childNode;
+      this._enterRoom(child);
+    } else if (hit.kind === 'card') {
+      this._openCard(hit.card);
+    }
+  }
+
+  _handleDoubleTap(x, y) {
+    if (this._activeCard) return;
+    // Project tap into the world (floor plane) — direction from camera.
     const rect = this.canvas.getBoundingClientRect();
-    this.mouseNdc.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
-    this.mouseNdc.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+    this.mouseNdc.x = ((x - rect.left) / rect.width) * 2 - 1;
+    this.mouseNdc.y = -((y - rect.top) / rect.height) * 2 + 1;
     this.raycaster.setFromCamera(this.mouseNdc, this.camera);
+    // Intersect with the floor plane (y=0)
+    const ray = this.raycaster.ray;
+    const t = -ray.origin.y / (ray.direction.y || -1e-6);
+    if (!Number.isFinite(t) || t < 0) return;
+    const target = new THREE.Vector3()
+      .copy(ray.origin)
+      .addScaledVector(ray.direction, t);
 
-    const meshes = this.cards.map(c => c.frontMesh);
-    const hits = this.raycaster.intersectObjects(meshes, false);
-    if (!hits.length) return;
-    const mesh = hits[0].object;
-    const card = this.cards.find(c => c.frontMesh === mesh);
-    if (card) this._openCard(card);
+    // Direction in XZ from camera to target
+    const cp = this.camera.position;
+    const dir = new THREE.Vector3(target.x - cp.x, 0, target.z - cp.z);
+    if (dir.lengthSq() < 1e-4) return;
+    dir.normalize();
+
+    // Find best waypoint forward of camera in this direction
+    const best = this._findWaypointInDirection(cp, dir);
+    if (best) {
+      this._tweenCamera(best.position.clone(), best.yaw, 0, 0.65, best.kind === 'room' ? best.ref : null);
+    } else {
+      // No waypoint found nearby — just hop a few meters toward the tap.
+      const hop = cp.clone().addScaledVector(dir, Math.min(6, cp.distanceTo(target)));
+      hop.y = CAMERA_HEIGHT;
+      const yaw = Math.atan2(dir.x, dir.z) + Math.PI;
+      this._tweenCamera(hop, yaw, 0, 0.45, null);
+    }
   }
 
+  _findWaypointInDirection(fromPos, dir) {
+    let best = null;
+    let bestScore = -Infinity;
+    const MAX_DIST = 40;
+    const CONE = Math.cos(Math.PI / 4); // ~45° half-angle
+    for (const wp of this.waypoints) {
+      const toWp = new THREE.Vector3(
+        wp.position.x - fromPos.x,
+        0,
+        wp.position.z - fromPos.z
+      );
+      const dist = toWp.length();
+      if (dist < 0.5 || dist > MAX_DIST) continue;
+      const dotted = (toWp.x * dir.x + toWp.z * dir.z) / dist;
+      if (dotted < CONE) continue;
+      // Score: prefer aligned + closer (but not too close to current position)
+      const score = dotted * 1.4 - dist * 0.04;
+      if (score > bestScore) { bestScore = score; best = wp; }
+    }
+    return best;
+  }
+
+  _pickInteractive(x, y) {
+    const rect = this.canvas.getBoundingClientRect();
+    this.mouseNdc.x = ((x - rect.left) / rect.width) * 2 - 1;
+    this.mouseNdc.y = -((y - rect.top) / rect.height) * 2 + 1;
+    this.raycaster.setFromCamera(this.mouseNdc, this.camera);
+    const candidates = [];
+    for (const c of this.cards) candidates.push(c.frontMesh);
+    for (const g of this.gates) candidates.push(g.mesh);
+    const hits = this.raycaster.intersectObjects(candidates, false);
+    if (!hits.length) return null;
+    const obj = hits[0].object;
+    const card = this.cards.find(c => c.frontMesh === obj);
+    if (card) return { kind: 'card', card };
+    const gate = this.gates.find(g => g.mesh === obj);
+    if (gate) return { kind: 'gate', gate };
+    return null;
+  }
+
+  // -------------------------------------------------------------------------
+  // Card flip + detail panel
+  // -------------------------------------------------------------------------
   _openCard(card) {
     if (this._activeCard) return;
     this._activeCard = card;
 
-    // Fly the camera to a viewing pose ~2.2m in front of the card
     const cardPos = new THREE.Vector3();
     card.group.getWorldPosition(cardPos);
     const targetPos = cardPos.clone().addScaledVector(card.frontNormal, 2.2);
     targetPos.y = CAMERA_HEIGHT;
-
     const lookDir = cardPos.clone().sub(targetPos).normalize();
-    const targetYaw = Math.atan2(lookDir.x, lookDir.z) + Math.PI; // camera looks down -Z by default
-    const targetPitch = 0;
+    const targetYaw = Math.atan2(lookDir.x, lookDir.z) + Math.PI;
 
-    this._cameraTween = {
-      fromPos: this.camera.position.clone(),
-      toPos: targetPos,
-      fromYaw: this.yaw,
-      toYaw: targetYaw,
-      fromPitch: this.pitch,
-      toPitch: targetPitch,
-      t: 0,
-      duration: 0.6
-    };
+    this._tweenCamera(targetPos, targetYaw, 0, 0.6, null);
 
-    // Start the flip (rotate inner group around its local Y axis = vertical)
     card.flipping = true;
     card.flipT = 0;
     card.flipFrom = card.flipGroup.rotation.y;
@@ -931,7 +1691,6 @@ class HallwayScene {
     const panel = document.getElementById('hallwayCardDetail');
     if (!panel) return;
     panel.style.display = 'flex';
-
     const sp = card.species;
     const photoEl = document.getElementById('hallwayCardPhoto');
     const nameEl = document.getElementById('hallwayCardName');
@@ -951,13 +1710,10 @@ class HallwayScene {
     metaEl.innerHTML = '';
     const addMeta = (label, value) => {
       const a = document.createElement('div');
-      a.className = 'label';
-      a.textContent = label;
+      a.className = 'label'; a.textContent = label;
       const b = document.createElement('div');
-      b.className = 'value';
-      b.textContent = value;
-      metaEl.appendChild(a);
-      metaEl.appendChild(b);
+      b.className = 'value'; b.textContent = value;
+      metaEl.appendChild(a); metaEl.appendChild(b);
     };
     addMeta('Rank', capitalize(sp.rank));
     addMeta('Observations', String(sp.count));
@@ -970,17 +1726,12 @@ class HallwayScene {
     linkEl.href = `https://www.inaturalist.org/observations?user_login=${encodeURIComponent(this.ctx.username)}&taxon_id=${sp.id}`;
     linkEl.textContent = `View ${sp.name} observations`;
 
-    // Tear down any previous Leaflet map
-    if (this._activeMap) {
-      try { this._activeMap.remove(); } catch {}
-      this._activeMap = null;
-    }
+    if (this._activeMap) { try { this._activeMap.remove(); } catch {} this._activeMap = null; }
     mapEl.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#94a3b8;font-size:.85rem;">Loading map…</div>';
 
-    // Fetch this card's observation data lazily
     fetchObservationsForCard({ username: this.ctx.username, taxonId: sp.id, max: 100 })
       .then(({ points, first }) => {
-        if (this._activeCard !== card) return; // user closed/swapped already
+        if (this._activeCard !== card) return;
         if (first) {
           addMeta('First seen', first.observed_on || first.time_observed_at || '—');
           linkEl.href = `https://www.inaturalist.org/observations/${first.id}`;
@@ -1019,16 +1770,12 @@ class HallwayScene {
       return;
     }
     const map = window.L.map(container, {
-      zoomControl: false,
-      attributionControl: false,
-      dragging: true,
-      scrollWheelZoom: false,
-      doubleClickZoom: true
+      zoomControl: false, attributionControl: false,
+      dragging: true, scrollWheelZoom: false, doubleClickZoom: true
     });
     this._activeMap = map;
     window.L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      maxZoom: 18,
-      crossOrigin: true
+      maxZoom: 18, crossOrigin: true
     }).addTo(map);
     const color = cssColorForRank(species.rank);
     const markers = points.map(p =>
@@ -1037,22 +1784,15 @@ class HallwayScene {
       })
     );
     const group = window.L.featureGroup(markers).addTo(map);
-    try {
-      map.fitBounds(group.getBounds().pad(0.2), { animate: false, maxZoom: 9 });
-    } catch {
-      map.setView([points[0].lat, points[0].lon], 5);
-    }
-    // Force a redraw once it's laid out
+    try { map.fitBounds(group.getBounds().pad(0.2), { animate: false, maxZoom: 9 }); }
+    catch { map.setView([points[0].lat, points[0].lon], 5); }
     setTimeout(() => map.invalidateSize(), 80);
   }
 
   _hideDetailPanel() {
     const panel = document.getElementById('hallwayCardDetail');
     if (panel) panel.style.display = 'none';
-    if (this._activeMap) {
-      try { this._activeMap.remove(); } catch {}
-      this._activeMap = null;
-    }
+    if (this._activeMap) { try { this._activeMap.remove(); } catch {} this._activeMap = null; }
   }
 
   // -------------------------------------------------------------------------
@@ -1063,33 +1803,35 @@ class HallwayScene {
     this._hideDetailPanel();
     for (const fn of this.disposeFns) { try { fn(); } catch {} }
     this.disposeFns.length = 0;
-    // Dispose materials/geometries/textures
-    this.scene.traverse(obj => {
+    this.scene?.traverse(obj => {
       if (obj.geometry) obj.geometry.dispose?.();
       if (obj.material) {
         const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
         for (const m of mats) {
-          if (m.map && !textureCache.has(m.map?.source?.data?.src)) m.map.dispose?.();
+          if (m.map) {
+            const src = m.map.source?.data?.src;
+            if (!src || !textureCache.has(src)) m.map.dispose?.();
+          }
           m.dispose?.();
         }
       }
     });
-    this.renderer.dispose();
+    this.renderer?.dispose();
     this.scene = null;
     this.cards = [];
-    this.bays = [];
+    this.gates = [];
+    this.rooms = [];
+    this.waypoints = [];
   }
 
   resetCamera() {
-    this.camera.position.set(0, CAMERA_HEIGHT, ENTRY_DEPTH);
-    this.yaw = 0;
-    this.pitch = 0;
     if (this._activeCard) this._closeActiveCard();
+    if (this.tree) this._enterRoom(this.tree);
   }
 }
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Misc helpers
 // ---------------------------------------------------------------------------
 function easeInOut(t) { return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2; }
 function lerpNum(a, b, t) { return a + (b - a) * t; }
@@ -1098,7 +1840,6 @@ function lerpAngle(a, b, t) {
   if (d < -Math.PI) d += 2 * Math.PI;
   return a + d * t;
 }
-function capitalize(s) { return (s || '').charAt(0).toUpperCase() + (s || '').slice(1); }
 
 // ---------------------------------------------------------------------------
 // Form wiring + lifecycle
@@ -1111,18 +1852,15 @@ function showSpinner(text) {
   if (s) s.style.display = 'flex';
   if (t && text) t.textContent = text;
 }
-
 function setSpinnerProgress(text) {
   const p = document.getElementById('hallwayLoadingProgress');
   if (p) p.textContent = text || '';
 }
-
 function hideSpinner() {
   const s = document.getElementById('hallwaySpinner');
   if (s) s.style.display = 'none';
   setSpinnerProgress('');
 }
-
 function showError(msg) {
   const card = document.querySelector('#hallwayPane .card-body');
   if (!card) return;
@@ -1132,7 +1870,6 @@ function showError(msg) {
   card.appendChild(errorDiv);
   setTimeout(() => errorDiv.remove(), 8000);
 }
-
 function enterHallway(ctx) {
   const formCard = document.querySelector('#hallwayPane > .card');
   if (formCard) formCard.style.display = 'none';
@@ -1141,10 +1878,9 @@ function enterHallway(ctx) {
   const titleEl = document.getElementById('hallwayHudTitle');
   if (titleEl) titleEl.textContent = `${ctx.taxonName} — ${ctx.username}`;
   const subEl = document.getElementById('hallwayHudSub');
-  if (subEl) subEl.textContent = 'Building corridor…';
+  if (subEl) subEl.textContent = 'Building the corridor…';
   document.body.style.overflow = 'hidden';
 }
-
 function exitHallway() {
   const formCard = document.querySelector('#hallwayPane > .card');
   if (formCard) formCard.style.display = '';
@@ -1156,47 +1892,37 @@ function exitHallway() {
     activeScene = null;
   }
 }
-
 function readDates() {
   const d1 = (document.getElementById('hallwayObsStart')?.value || '').trim();
   const d2 = (document.getElementById('hallwayObsEnd')?.value   || '').trim();
   return { d1, d2 };
 }
 
-// Autocomplete wiring — re-uses window.searchTaxa from script.js
 function wireAutocomplete() {
   const input = document.getElementById('hallwayTaxonName');
   const results = document.getElementById('hallwayAutocompleteResults');
   const hidden = document.getElementById('hallwaySelectedTaxonId');
   if (!input || !results || !hidden) return;
-
   let debounce = null;
-
   const render = (rows) => {
     results.innerHTML = '';
-    if (!rows || !rows.length) {
-      results.style.display = 'none';
-      return;
-    }
+    if (!rows || !rows.length) { results.style.display = 'none'; return; }
     for (const r of rows) {
       const item = document.createElement('div');
       item.className = 'autocomplete-item';
       const tid = r.taxon_id || r.id;
       const display = r.common_name || r.name;
-      let html = `<strong>${display}</strong>`;
-      if (r.common_name) html += ` <span class="scientific-name">${r.name}</span>`;
-      html += ` <span class="taxon-id">${r.rank || ''} (ID: ${tid})</span>`;
+      let html = `<strong>${escapeHtml(display)}</strong>`;
+      if (r.common_name) html += ` <span class="scientific-name">${escapeHtml(r.name)}</span>`;
+      html += ` <span class="taxon-id">${escapeHtml(r.rank || '')} (ID: ${tid})</span>`;
       item.innerHTML = html;
       item.addEventListener('click', () => {
-        input.value = display;
-        hidden.value = tid;
-        results.style.display = 'none';
+        input.value = display; hidden.value = tid; results.style.display = 'none';
       });
       results.appendChild(item);
     }
     results.style.display = 'block';
   };
-
   input.addEventListener('input', () => {
     const q = input.value.trim();
     if (debounce) clearTimeout(debounce);
@@ -1207,7 +1933,6 @@ function wireAutocomplete() {
       }
     }, 150);
   });
-
   document.addEventListener('click', (e) => {
     if (!input.contains(e.target) && !results.contains(e.target)) {
       results.style.display = 'none';
@@ -1215,7 +1940,6 @@ function wireAutocomplete() {
   });
 }
 
-// Radio toggle for name vs ID
 function wireSearchTypeToggle() {
   const name = document.getElementById('hallwaySearchName');
   const id = document.getElementById('hallwaySearchId');
@@ -1223,12 +1947,10 @@ function wireSearchTypeToggle() {
   const idPane = document.getElementById('hallwayIdSearch');
   if (!name || !id || !namePane || !idPane) return;
   name.addEventListener('change', () => {
-    namePane.classList.add('active');
-    idPane.classList.remove('active');
+    namePane.classList.add('active'); idPane.classList.remove('active');
   });
   id.addEventListener('change', () => {
-    namePane.classList.remove('active');
-    idPane.classList.add('active');
+    namePane.classList.remove('active'); idPane.classList.add('active');
   });
 }
 
@@ -1251,38 +1973,26 @@ function wireFormSubmit() {
 
     showSpinner('Gathering species from iNaturalist…');
     const { d1, d2 } = readDates();
-
     let species = [];
     try {
       species = await fetchUserSpecies({
-        username,
-        baseTaxonId: taxonId,
-        d1,
-        d2,
+        username, baseTaxonId: taxonId, d1, d2,
         onProgress: ({ page, total }) =>
           setSpinnerProgress(`Page ${page} · ${total} species found`)
       });
     } catch (err) {
-      hideSpinner();
-      showError('Error fetching species: ' + err.message);
-      return;
+      hideSpinner(); showError('Error fetching species: ' + err.message); return;
     }
-
     if (!species.length) {
       hideSpinner();
       showError('No observations found for this user under the selected taxon.');
       return;
     }
-
     hideSpinner();
     const ctx = { username, baseTaxonId: Number(taxonId), taxonName };
     enterHallway(ctx);
 
-    // Build scene (dispose any previous scene first)
-    if (activeScene) {
-      try { activeScene.dispose(); } catch {}
-      activeScene = null;
-    }
+    if (activeScene) { try { activeScene.dispose(); } catch {} activeScene = null; }
     const canvas = document.getElementById('hallwayCanvas');
     activeScene = new HallwayScene(canvas, ctx);
     const overlay = document.getElementById('hallwayLoadingOverlay');
@@ -1291,6 +2001,7 @@ function wireFormSubmit() {
       await activeScene.build(species);
     } catch (err) {
       console.error('hallway build failed', err);
+      showError('Building the hallway failed: ' + err.message);
     }
     if (overlay) overlay.style.display = 'none';
     activeScene.start();
@@ -1305,16 +2016,12 @@ function wireSceneControls() {
   document.getElementById('hallwayCardClose')?.addEventListener('click', () => {
     activeScene?._closeActiveCard?.();
   });
-
-  // Pause render loop when leaving the tab (perf + battery)
   window.addEventListener('hallway:tabchange', (e) => {
     const tabId = e.detail?.tabId;
     if (!activeScene) return;
     if (tabId === 'hallwayPane') activeScene.start();
     else activeScene.pause();
   });
-
-  // Pause when document is hidden
   document.addEventListener('visibilitychange', () => {
     if (!activeScene) return;
     if (document.hidden) activeScene.pause();
