@@ -503,6 +503,69 @@ const textureLoader = new THREE.TextureLoader();
 textureLoader.setCrossOrigin('anonymous');
 const textureCache = new Map();
 
+// Per-session photo diagnostics — we rate-limit to a handful of console
+// warnings so a CORS-blocked CDN doesn't flood the log.
+const _photoDiag = { logged: 0, hintShown: false };
+function _diagnosePhotoFailure(kind, url, info) {
+  if (_photoDiag.logged > 4) return;
+  _photoDiag.logged++;
+  console.warn(`[hallway photo] ${kind} failed for ${url} — ${info}`);
+  if (!_photoDiag.hintShown) {
+    _photoDiag.hintShown = true;
+    console.warn(
+      '[hallway] If you see "Failed to fetch" or "TypeError" above, the iNat ' +
+      'photo CDN is refusing CORS — WebGL cannot upload a tainted image as a texture. ' +
+      'The fix is a same-origin image proxy on the worker (e.g. /img-proxy?url=...).'
+    );
+  }
+}
+
+// Modern loader: fetch the bytes (respects CORS), build an ImageBitmap, hand
+// to THREE.Texture. Falls back to TextureLoader if fetch isn't available
+// (very old browsers) so we still try as hard as possible. Also makes
+// failures observable — the old loader silently resolved null on any error.
+async function loadPhotoTexture(url) {
+  if (!url) return null;
+  if (textureCache.has(url)) return textureCache.get(url);
+
+  try {
+    const r = await fetch(url, { mode: 'cors', credentials: 'omit' });
+    if (!r.ok) {
+      _diagnosePhotoFailure('HTTP', url, `status ${r.status}`);
+      return null;
+    }
+    const blob = await r.blob();
+    let bitmap;
+    try {
+      bitmap = await createImageBitmap(blob);
+    } catch (e) {
+      _diagnosePhotoFailure('decode', url, e.message || String(e));
+      return null;
+    }
+    const tex = new THREE.Texture(bitmap);
+    tex.needsUpdate = true;
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.anisotropy = 4;
+    textureCache.set(url, tex);
+    return tex;
+  } catch (e) {
+    _diagnosePhotoFailure('fetch', url, e.message || String(e));
+    // Fallback to TextureLoader (works when fetch is unavailable). Will
+    // hit the same CORS wall in practice, but worth one more try.
+    try {
+      const tex = await new Promise((resolve, reject) => {
+        textureLoader.load(url, resolve, undefined, reject);
+      });
+      tex.colorSpace = THREE.SRGBColorSpace;
+      tex.anisotropy = 4;
+      textureCache.set(url, tex);
+      return tex;
+    } catch {
+      return null;
+    }
+  }
+}
+
 function loadTexture(url) {
   if (!url) return Promise.resolve(null);
   if (textureCache.has(url)) return Promise.resolve(textureCache.get(url));
@@ -540,8 +603,13 @@ function wrapText(ctx, text, x, y, maxWidth, lineHeight, maxLines = 3) {
   shown.forEach((ln, i) => ctx.fillText(ln, x, startY + i * lineHeight));
 }
 
-function makeLabelTexture({ title, subtitle, color = '#22c55e' }) {
-  const w = 512, h = 384;
+// Front-of-card placeholder shown until the user's first-observation photo
+// loads (or as the permanent state if no photo is available). The species
+// name lives on a separate nameplate now, so the placeholder is intentionally
+// quiet — a rank-color gradient with a faint rank-initial watermark — so it
+// doesn't look "wrong" when it's the final state.
+function makeLabelTexture({ color = '#22c55e', rank = '' }) {
+  const w = 256, h = 192;
   const c = document.createElement('canvas');
   c.width = w; c.height = h;
   const ctx = c.getContext('2d');
@@ -551,17 +619,53 @@ function makeLabelTexture({ title, subtitle, color = '#22c55e' }) {
   ctx.fillStyle = grad;
   ctx.fillRect(0, 0, w, h);
   ctx.strokeStyle = color;
-  ctx.lineWidth = 10;
-  ctx.strokeRect(5, 5, w - 10, h - 10);
-  ctx.fillStyle = '#f8fafc';
+  ctx.lineWidth = 5;
+  ctx.strokeRect(3, 3, w - 6, h - 6);
+  // Faint rank-initial watermark
+  const letter = (rank || '?').charAt(0).toUpperCase();
+  ctx.fillStyle = color;
+  ctx.globalAlpha = 0.18;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.font = `italic 700 36px Georgia, serif`;
-  wrapText(ctx, title || '—', w / 2, h / 2 - 20, w - 60, 44, 2);
-  if (subtitle) {
+  ctx.font = '900 96px Georgia, serif';
+  ctx.fillText(letter, w / 2, h / 2);
+  ctx.globalAlpha = 1.0;
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+// Small museum-style "nameplate" that hangs under each card with the
+// scientific + common name. Always visible from the corridor side so users
+// know what they're looking at even before the photo loads (or if it never
+// does).
+function makeNameplateTexture(species) {
+  const w = 440, h = 88;  // 5:1 to match the plate plane aspect
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  const ctx = c.getContext('2d');
+  const grad = ctx.createLinearGradient(0, 0, 0, h);
+  grad.addColorStop(0, '#1d2638');
+  grad.addColorStop(1, '#0f172a');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, w, h);
+  const accent = cssColorForRank(species.rank);
+  ctx.strokeStyle = accent;
+  ctx.lineWidth = 2;
+  ctx.strokeRect(1, 1, w - 2, h - 2);
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  if (species.common) {
+    ctx.fillStyle = '#f8fafc';
+    ctx.font = 'italic 700 22px Georgia, serif';
+    wrapText(ctx, species.name || '—', w / 2, h / 2 - 14, w - 20, 24, 1);
     ctx.fillStyle = '#cbd5e1';
-    ctx.font = '500 22px sans-serif';
-    wrapText(ctx, subtitle, w / 2, h / 2 + 60, w - 60, 26, 1);
+    ctx.font = '500 15px sans-serif';
+    wrapText(ctx, species.common, w / 2, h / 2 + 14, w - 20, 18, 1);
+  } else {
+    ctx.fillStyle = '#f8fafc';
+    ctx.font = 'italic 700 26px Georgia, serif';
+    wrapText(ctx, species.name || '—', w / 2, h / 2, w - 20, 28, 1);
   }
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;
@@ -1674,11 +1778,11 @@ class HallwayScene {
     group.add(flipGroup);
 
     const accent = cssColorForRank(species.rank);
-    const placeholderTex = makeLabelTexture({
-      title: species.name,
-      subtitle: species.common,
-      color: accent
-    });
+    // Front placeholder is intentionally quiet — a rank-color gradient with a
+    // faint rank-initial watermark — because the species name now lives on a
+    // dedicated nameplate under the card, so even when no photo loads the
+    // viewer still knows what they're looking at.
+    const placeholderTex = makeLabelTexture({ color: accent, rank: species.rank });
     // Back texture is created lazily on first flip — building hundreds of
     // canvas textures up front would lock the JS thread for several seconds
     // on a large taxon like Lepidoptera.
@@ -1712,6 +1816,22 @@ class HallwayScene {
     flipGroup.add(front);
     flipGroup.add(back);
 
+    // Museum-style nameplate hanging below the card. Lives inside the
+    // flipGroup so it tracks the card's orientation but stays visible from
+    // the corridor side. Slightly forward of the frame (z = +0.04) so it
+    // doesn't z-fight with the wall behind the card.
+    const plateW = CARD_W * 0.88;
+    const plateH = 0.22;
+    const plateTex = makeNameplateTexture(species);
+    const plate = new THREE.Mesh(
+      new THREE.PlaneGeometry(plateW, plateH),
+      new THREE.MeshBasicMaterial({
+        map: plateTex, transparent: true, side: THREE.DoubleSide
+      })
+    );
+    plate.position.set(0, -CARD_H / 2 - plateH / 2 - 0.04, 0.04);
+    flipGroup.add(plate);
+
     // For raycasting, mark the front mesh's userData with a back-ref to the card
     front.userData.kind = 'card';
 
@@ -1720,6 +1840,7 @@ class HallwayScene {
       flipGroup,
       frontMesh: front,
       backMesh: back,
+      nameplateMesh: plate,
       species,
       flipping: false,
       flipped: false,
@@ -1761,63 +1882,68 @@ class HallwayScene {
       return ap.distanceToSquared(camPos) - bp.distanceToSquared(camPos);
     });
 
-    // Load photos for every card in the scene (sorted nearest-first so the
-    // wall the user is staring at populates within a couple seconds). A very
-    // large taxon will take a while in the background — the HUD chip shows
-    // progress so the user can tell it's still streaming.
     const queue = cards;
     this._photosTotal = queue.length;
     this._photosLoaded = 0;
+    this._photosSuccess = 0;
+    this._photosNoUrl = 0;
+    this._photosError = 0;
     this._updatePhotoProgress();
 
     let idx = 0;
-    const concurrency = 8;
-    const failures = { count: 0 };
+    const concurrency = 6;
 
     const work = async () => {
       while (idx < queue.length) {
         const myIdx = idx++;
         const card = queue[myIdx];
-        try {
-          let url = null;
-          if (getFirstObs) {
-            try {
-              const info = await getFirstObs(username, card.species.id);
-              url = info?.image_urls?.medium || info?.image_urls?.small || info?.image_urls?.thumb || null;
-              card._firstObs = info;
-            } catch {}
-          }
-          if (!url) url = card.species.defaultPhoto;
-          if (!url) {
-            this._photosLoaded++;
-            this._updatePhotoProgress();
-            continue;
-          }
-          const tex = await loadTexture(url);
-          if (tex && card.frontMesh) {
-            tex.center.set(0.5, 0.5);
-            const aspect = (tex.image?.width || 1) / (tex.image?.height || 1);
-            const target = CARD_W / CARD_H;
-            if (aspect > target) {
-              tex.repeat.set(target / aspect, 1);
-              tex.offset.set((1 - target / aspect) / 2, 0);
-            } else {
-              tex.repeat.set(1, aspect / target);
-              tex.offset.set(0, (1 - aspect / target) / 2);
-            }
-            card.frontMesh.material.map?.dispose?.();
-            card.frontMesh.material.map = tex;
-            card.frontMesh.material.needsUpdate = true;
-          } else if (!tex) {
-            // CORS or 404. Note the failure so the HUD can hint if many fail.
-            failures.count++;
-            if (failures.count === 5) {
-              console.warn('[hallway] several photos failed to load — likely CORS on iNat photo CDN');
+
+        // Try the user's first-observation photo, falling back to the
+        // species' default photo from species_counts.
+        let url = null;
+        if (getFirstObs) {
+          try {
+            const info = await getFirstObs(username, card.species.id);
+            url = info?.image_urls?.medium
+               || info?.image_urls?.small
+               || info?.image_urls?.thumb
+               || null;
+            card._firstObs = info;
+          } catch (e) {
+            // first-observation API itself errored — log first one only
+            if (this._photosError === 0) {
+              console.warn('[hallway] first-observation API error:', e.message || e);
             }
           }
-        } catch (e) {
-          failures.count++;
         }
+        if (!url) url = card.species.defaultPhoto;
+        if (!url) {
+          this._photosNoUrl++;
+          this._photosLoaded++;
+          this._updatePhotoProgress();
+          continue;
+        }
+
+        const tex = await loadPhotoTexture(url);
+        if (tex && card.frontMesh) {
+          tex.center.set(0.5, 0.5);
+          const aspect = (tex.image?.width || 1) / (tex.image?.height || 1);
+          const target = CARD_W / CARD_H;
+          if (aspect > target) {
+            tex.repeat.set(target / aspect, 1);
+            tex.offset.set((1 - target / aspect) / 2, 0);
+          } else {
+            tex.repeat.set(1, aspect / target);
+            tex.offset.set(0, (1 - aspect / target) / 2);
+          }
+          card.frontMesh.material.map?.dispose?.();
+          card.frontMesh.material.map = tex;
+          card.frontMesh.material.needsUpdate = true;
+          this._photosSuccess++;
+        } else {
+          this._photosError++;
+        }
+
         this._photosLoaded++;
         this._updatePhotoProgress();
         // Tiny gap to keep the UI responsive
@@ -1826,7 +1952,16 @@ class HallwayScene {
     };
     const workers = [];
     for (let i = 0; i < concurrency; i++) workers.push(work());
-    Promise.all(workers).catch(() => {});
+    Promise.all(workers).then(() => {
+      console.info(
+        `[hallway] photo load complete — ${this._photosSuccess} ok, ` +
+        `${this._photosError} failed, ${this._photosNoUrl} no URL, ` +
+        `total ${this._photosTotal}.` +
+        (this._photosSuccess === 0 && this._photosError > 0
+          ? ' Every photo URL was unreachable — see the [hallway photo] warnings above for the cause.'
+          : '')
+      );
+    }).catch(() => {});
   }
 
   _updatePhotoProgress() {
