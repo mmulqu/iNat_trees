@@ -470,28 +470,65 @@ function buildBreadcrumb(node) {
   return segs;
 }
 
-// Linear mode: ignore the tree, pack species into a straight corridor of
-// "bays" (one bay = 3 cards per wall × 2 walls). Species are sorted by their
-// ancestor chain so taxonomically-related species sit next to each other.
-function groupSpeciesIntoLinearBays(species, perBay = 6) {
-  const sorted = [...species].sort((a, b) => {
-    const aKey = a.ancestors.join(',') + '/' + (a.name || '');
-    const bKey = b.ancestors.join(',') + '/' + (b.name || '');
-    return aKey.localeCompare(bKey);
-  });
-  const bays = [];
-  for (let i = 0; i < sorted.length; i += perBay) {
-    const slice = sorted.slice(i, i + perBay);
-    // Deepest ancestor every species in this bay shares — used for the HUD
-    // label "you're approaching <Family Foo>".
-    const sets = slice.map(s => new Set(s.ancestors));
-    const first = slice[0].ancestors;
-    let sharedDeepest = null;
-    for (let j = first.length - 1; j >= 0; j--) {
-      const aid = first[j];
-      if (sets.every(set => set.has(aid))) { sharedDeepest = aid; break; }
+// Linear mode: ignore the tree, group species by their direct parent (the
+// genus for most species) so all members of a genus stay together on the
+// wall. Order down the corridor is taxonomic: alphabetical chain of
+// ancestor names (Family › Genus › Species), so you walk family by family,
+// genus by genus. A genus with more than `perBay` species fills consecutive
+// bays. A bay never mixes species from different genera — a sparse genus
+// just leaves empty slots on the wall, which keeps the structure legible.
+function groupSpeciesIntoLinearBays(species, perBay = 6, ancestorMeta = {}) {
+  const directParentId = (s) => {
+    const a = s.ancestors || [];
+    for (let i = a.length - 1; i >= 0; i--) {
+      if (a[i] !== s.id) return a[i];
     }
-    bays.push({ species: slice, sharedAncestorId: sharedDeepest });
+    return 0;
+  };
+  const sortKey = (s) => {
+    const ids = (s.ancestors || []).filter(id => id !== s.id);
+    // Pad numeric IDs so unknown-name fallback sorts stably (no name => `~<id>`)
+    const segs = ids.map(id => {
+      const meta = ancestorMeta[id];
+      return meta?.name ? meta.name.toLowerCase() : `~${id}`;
+    });
+    segs.push((s.name || '').toLowerCase());
+    return segs.join(' / ');
+  };
+  const sorted = [...species].sort((a, b) => {
+    const ka = sortKey(a), kb = sortKey(b);
+    if (ka < kb) return -1;
+    if (ka > kb) return 1;
+    return 0;
+  });
+
+  // Group consecutive sorted species by their direct parent id.
+  const groups = [];
+  let current = null;
+  for (const s of sorted) {
+    const p = directParentId(s);
+    if (!current || current.parentId !== p) {
+      current = { parentId: p, species: [] };
+      groups.push(current);
+    }
+    current.species.push(s);
+  }
+
+  // Pack each group into bays without mixing groups across bays. Genera
+  // with >perBay species spill into consecutive bays that share the same
+  // shared-ancestor id (so the HUD continues reading "Genus Foo").
+  const bays = [];
+  for (const group of groups) {
+    const parts = Math.max(1, Math.ceil(group.species.length / perBay));
+    for (let i = 0; i < group.species.length; i += perBay) {
+      const slice = group.species.slice(i, i + perBay);
+      bays.push({
+        species: slice,
+        sharedAncestorId: group.parentId,
+        partIndex: Math.floor(i / perBay),
+        partTotal: parts
+      });
+    }
   }
   return bays;
 }
@@ -1045,27 +1082,40 @@ class HallwayScene {
   }
 
   async _buildLinearScene(onProgress) {
-    onProgress?.({ pct: 0.05, label: 'Sorting species' });
-    // Bay-pack the species into a straight corridor.
+    onProgress?.({ pct: 0.03, label: 'Loading taxonomy' });
     const cap = MAX_RENDERED * 6;
     const subset = this.species.slice(0, cap);
-    const bays = groupSpeciesIntoLinearBays(subset, 6);
+
+    // Resolve every ancestor name BEFORE we sort, so the corridor order is a
+    // proper alphabetical walk of the taxonomic tree (Family › Genus ›
+    // Species) instead of an arbitrary order by iNat numeric IDs. Cached
+    // names are reused across rebuilds, so toggling back to linear after
+    // branching has filled the cache is essentially free.
+    const ids = new Set();
+    for (const s of subset) for (const a of s.ancestors) ids.add(a);
+    const missing = [...ids].filter(id => !this._ancestorMeta[id]);
+    if (missing.length) {
+      const fetched = await fetchTaxaNames(missing, (done, total) => {
+        const p = total ? done / total : 1;
+        onProgress?.({ pct: 0.03 + 0.25 * p, label: `Loading taxonomy (${done}/${total})` });
+      });
+      Object.assign(this._ancestorMeta, fetched);
+    }
+    onProgress?.({ pct: 0.30, label: 'Grouping species by genus' });
+
+    // Group by direct parent (genus for most species), ordered by ancestor
+    // names — walking the corridor now goes family by family, genus by
+    // genus. Each bay holds at most one genus; a genus with more than 6
+    // species spills into consecutive bays.
+    const bays = groupSpeciesIntoLinearBays(subset, 6, this._ancestorMeta);
     this.linearBays = bays;
     this.tree = null;
     this.rooms = [];
 
-    // Background fetch ancestor names for the HUD label per bay; not awaited.
-    const ancIds = [...new Set(bays.map(b => b.sharedAncestorId).filter(Boolean))];
-    const missingAnc = ancIds.filter(id => !this._ancestorMeta[id]);
-    if (missingAnc.length) {
-      fetchTaxaNames(missingAnc).then(map => Object.assign(this._ancestorMeta, map))
-        .catch(() => {});
-    }
-
-    onProgress?.({ pct: 0.15, label: `Building bays (0/${bays.length})` });
+    onProgress?.({ pct: 0.34, label: `Building bays (0/${bays.length})` });
     await this._buildLinearCorridor(bays, (done, total) => {
       const p = total ? done / total : 1;
-      onProgress?.({ pct: 0.15 + 0.80 * p, label: `Building bays (${done}/${total})` });
+      onProgress?.({ pct: 0.34 + 0.62 * p, label: `Building bays (${done}/${total})` });
     });
   }
 
@@ -1236,7 +1286,10 @@ class HallwayScene {
         endZ: bayEndZ,
         sharedAncestorId: bay.sharedAncestorId,
         color: cssColorForRank(repRank),
-        index: bayIdx
+        index: bayIdx,
+        speciesCount: bay.species.length,
+        partIndex: bay.partIndex ?? 0,
+        partTotal: bay.partTotal ?? 1
       });
 
       // Waypoint at this bay's center so double-tap can hop bay-to-bay
@@ -1277,14 +1330,20 @@ class HallwayScene {
     const bay = bays[bayIdx] || bays[0];
     const color = bay.color || '#22c55e';
     const anc = this._ancestorMeta?.[bay.sharedAncestorId];
-    const label = anc
-      ? `${anc.rank ? capitalize(anc.rank) + ' ' : ''}${anc.name}`
-      : `Bay ${bayIdx + 1} of ${bays.length}`;
+    const rankPrefix = anc?.rank ? capitalize(anc.rank) + ' ' : '';
+    const baseLabel = anc ? `${rankPrefix}${anc.name}` : `Bay ${bayIdx + 1} of ${bays.length}`;
+    const label = bay.partTotal > 1 ? `${baseLabel} · part ${bay.partIndex + 1} of ${bay.partTotal}` : baseLabel;
     title.textContent = label;
     title.style.borderLeft = `4px solid ${color}`;
     title.style.paddingLeft = '10px';
-    const cardsBefore = bayIdx * 6;
-    const bayCount = (this.linearBays[bayIdx]?.species?.length) || 0;
+
+    // Real species range: sum the actual lengths of preceding bays (genera
+    // can leave empty slots when their species count isn't a multiple of 6).
+    let cardsBefore = 0;
+    for (let i = 0; i < bayIdx; i++) {
+      cardsBefore += bays[i].speciesCount || 0;
+    }
+    const bayCount = bay.speciesCount || 0;
     sub.textContent =
       `Species ${cardsBefore + 1}–${cardsBefore + bayCount} of ${this.species.length} · ` +
       `${this.ctx.username} @ ${this.ctx.taxonName}`;
