@@ -578,12 +578,25 @@ async function loadPhotoTexture(url) {
     const blob = await r.blob();
     let bitmap;
     try {
-      bitmap = await createImageBitmap(blob);
+      // Pre-flip the bitmap at decode time. Three.js's default tex.flipY=true
+      // is silently ignored for ImageBitmap uploads in WebGL2 on most
+      // browsers, which is why photos rendered upside down with the previous
+      // code. Combining imageOrientation:'flipY' here with tex.flipY=false
+      // below gives exactly one net flip and produces an upright photo.
+      bitmap = await createImageBitmap(blob, { imageOrientation: 'flipY' });
     } catch (e) {
-      _diagnosePhotoFailure('decode', url, e.message || String(e));
-      return null;
+      // Older browsers (Safari < 15) may not support the imageOrientation
+      // option — fall back to a plain decode and rely on tex.flipY=true.
+      try {
+        bitmap = await createImageBitmap(blob);
+        bitmap._needsClassicFlip = true;
+      } catch (e2) {
+        _diagnosePhotoFailure('decode', url, e2.message || String(e2));
+        return null;
+      }
     }
     const tex = new THREE.Texture(bitmap);
+    tex.flipY = !!bitmap._needsClassicFlip; // matches the decode path above
     tex.needsUpdate = true;
     tex.colorSpace = THREE.SRGBColorSpace;
     tex.anisotropy = 4;
