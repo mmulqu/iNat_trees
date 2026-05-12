@@ -72,7 +72,11 @@ const CARD_Y          = 1.65;
 const CAMERA_HEIGHT   = 1.65;
 const GATE_W          = 1.5;
 const GATE_H          = 2.6;
-const MAX_RENDERED    = 240;    // safety cap on number of rendered rooms+leaves
+const MAX_RENDERED    = 500;    // safety cap on number of rendered rooms+leaves
+                                // (raised so a hundreds-of-species taxon like
+                                // Lepidoptera can fit every leaf species in
+                                // the branching tree; LOD culling means only
+                                // ~10 rooms render per frame anyway)
 // LOD culling: rooms farther than this from the camera are hidden each tick
 // (their meshes stay in the scene but skip rendering). The fog fades out
 // before culling kicks in so pop-in is hidden by the fade-to-black.
@@ -1169,6 +1173,9 @@ class HallwayScene {
     this.tree = null;
     this._currentRoom = null;
     this._billboards = [];
+    // Drain the previous build's photo queue so its workers exit their
+    // while-loops before touching disposed materials from the old scene.
+    this._photoQueue = new Set();
     this._photosTotal = 0;
     this._photosLoaded = 0;
     this._updatePhotoProgress();
@@ -1925,51 +1932,61 @@ class HallwayScene {
   }
 
   async _loadUserPhotos() {
-    // Visit cards in order of distance from the camera so the user sees the
-    // photos in front of them first. The camera starts inside the lobby for
-    // branching mode and at the corridor entry for linear mode, so the
-    // closest 10–20 cards get priority and stream in within ~1–2 seconds.
+    // Dynamic priority queue: every time a worker is ready for a new card it
+    // re-picks the *currently* closest unloaded card to the camera. So if
+    // the user walks halfway down a 200-card hallway while photos are still
+    // streaming, the loader pivots to the area they just walked into
+    // instead of grinding through the original entry-facing order.
     const username = this.ctx.username;
     const getFirstObs = window.getFirstObs;
-    const camPos = this.camera.position.clone();
     const cards = [...this.cards];
-    cards.sort((a, b) => {
-      const ap = new THREE.Vector3();
-      const bp = new THREE.Vector3();
-      a.group.getWorldPosition(ap);
-      b.group.getWorldPosition(bp);
-      return ap.distanceToSquared(camPos) - bp.distanceToSquared(camPos);
-    });
 
-    const queue = cards;
-    this._photosTotal = queue.length;
+    // Card positions are fixed (cards live in the room group at origin), so
+    // cache once to avoid recomputing each iteration.
+    for (const c of cards) c._worldPos = c.group.position;
+
+    this._photoQueue = new Set(cards);
+    this._photosTotal = cards.length;
     this._photosLoaded = 0;
     this._photosSuccess = 0;
     this._photosNoUrl = 0;
     this._photosError = 0;
     this._updatePhotoProgress();
 
-    let idx = 0;
-    const concurrency = 6;
+    const concurrency = 8;
+
+    const pickNearest = () => {
+      const cp = this.camera.position;
+      let nearest = null, nearestD = Infinity;
+      for (const c of this._photoQueue) {
+        const dx = c._worldPos.x - cp.x;
+        const dz = c._worldPos.z - cp.z;
+        const d = dx * dx + dz * dz;
+        if (d < nearestD) { nearestD = d; nearest = c; }
+      }
+      if (nearest) this._photoQueue.delete(nearest);
+      return nearest;
+    };
 
     const work = async () => {
-      while (idx < queue.length) {
-        const myIdx = idx++;
-        const card = queue[myIdx];
+      while (this._photoQueue.size > 0) {
+        const card = pickNearest();
+        if (!card) break;
 
         // Try the user's first-observation photo, falling back to the
-        // species' default photo from species_counts.
+        // species' default photo from species_counts. We prefer "small"
+        // (~240px) over "medium" (~500px) so loading 200+ cards doesn't
+        // chew through ~200MB of GPU texture memory and stutter the frame.
         let url = null;
         if (getFirstObs) {
           try {
             const info = await getFirstObs(username, card.species.id);
-            url = info?.image_urls?.medium
-               || info?.image_urls?.small
+            url = info?.image_urls?.small
+               || info?.image_urls?.medium
                || info?.image_urls?.thumb
                || null;
             card._firstObs = info;
           } catch (e) {
-            // first-observation API itself errored — log first one only
             if (this._photosError === 0) {
               console.warn('[hallway] first-observation API error:', e.message || e);
             }
