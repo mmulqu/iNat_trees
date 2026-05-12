@@ -72,7 +72,11 @@ const CARD_Y          = 1.65;
 const CAMERA_HEIGHT   = 1.65;
 const GATE_W          = 1.5;
 const GATE_H          = 2.6;
-const MAX_RENDERED    = 240;    // safety cap on number of rendered rooms+leaves
+const MAX_RENDERED    = 500;    // safety cap on number of rendered rooms+leaves
+                                // (raised so a hundreds-of-species taxon like
+                                // Lepidoptera can fit every leaf species in
+                                // the branching tree; LOD culling means only
+                                // ~10 rooms render per frame anyway)
 // LOD culling: rooms farther than this from the camera are hidden each tick
 // (their meshes stay in the scene but skip rendering). The fog fades out
 // before culling kicks in so pop-in is hidden by the fade-to-black.
@@ -470,28 +474,65 @@ function buildBreadcrumb(node) {
   return segs;
 }
 
-// Linear mode: ignore the tree, pack species into a straight corridor of
-// "bays" (one bay = 3 cards per wall × 2 walls). Species are sorted by their
-// ancestor chain so taxonomically-related species sit next to each other.
-function groupSpeciesIntoLinearBays(species, perBay = 6) {
-  const sorted = [...species].sort((a, b) => {
-    const aKey = a.ancestors.join(',') + '/' + (a.name || '');
-    const bKey = b.ancestors.join(',') + '/' + (b.name || '');
-    return aKey.localeCompare(bKey);
-  });
-  const bays = [];
-  for (let i = 0; i < sorted.length; i += perBay) {
-    const slice = sorted.slice(i, i + perBay);
-    // Deepest ancestor every species in this bay shares — used for the HUD
-    // label "you're approaching <Family Foo>".
-    const sets = slice.map(s => new Set(s.ancestors));
-    const first = slice[0].ancestors;
-    let sharedDeepest = null;
-    for (let j = first.length - 1; j >= 0; j--) {
-      const aid = first[j];
-      if (sets.every(set => set.has(aid))) { sharedDeepest = aid; break; }
+// Linear mode: ignore the tree, group species by their direct parent (the
+// genus for most species) so all members of a genus stay together on the
+// wall. Order down the corridor is taxonomic: alphabetical chain of
+// ancestor names (Family › Genus › Species), so you walk family by family,
+// genus by genus. A genus with more than `perBay` species fills consecutive
+// bays. A bay never mixes species from different genera — a sparse genus
+// just leaves empty slots on the wall, which keeps the structure legible.
+function groupSpeciesIntoLinearBays(species, perBay = 6, ancestorMeta = {}) {
+  const directParentId = (s) => {
+    const a = s.ancestors || [];
+    for (let i = a.length - 1; i >= 0; i--) {
+      if (a[i] !== s.id) return a[i];
     }
-    bays.push({ species: slice, sharedAncestorId: sharedDeepest });
+    return 0;
+  };
+  const sortKey = (s) => {
+    const ids = (s.ancestors || []).filter(id => id !== s.id);
+    // Pad numeric IDs so unknown-name fallback sorts stably (no name => `~<id>`)
+    const segs = ids.map(id => {
+      const meta = ancestorMeta[id];
+      return meta?.name ? meta.name.toLowerCase() : `~${id}`;
+    });
+    segs.push((s.name || '').toLowerCase());
+    return segs.join(' / ');
+  };
+  const sorted = [...species].sort((a, b) => {
+    const ka = sortKey(a), kb = sortKey(b);
+    if (ka < kb) return -1;
+    if (ka > kb) return 1;
+    return 0;
+  });
+
+  // Group consecutive sorted species by their direct parent id.
+  const groups = [];
+  let current = null;
+  for (const s of sorted) {
+    const p = directParentId(s);
+    if (!current || current.parentId !== p) {
+      current = { parentId: p, species: [] };
+      groups.push(current);
+    }
+    current.species.push(s);
+  }
+
+  // Pack each group into bays without mixing groups across bays. Genera
+  // with >perBay species spill into consecutive bays that share the same
+  // shared-ancestor id (so the HUD continues reading "Genus Foo").
+  const bays = [];
+  for (const group of groups) {
+    const parts = Math.max(1, Math.ceil(group.species.length / perBay));
+    for (let i = 0; i < group.species.length; i += perBay) {
+      const slice = group.species.slice(i, i + perBay);
+      bays.push({
+        species: slice,
+        sharedAncestorId: group.parentId,
+        partIndex: Math.floor(i / perBay),
+        partTotal: parts
+      });
+    }
   }
   return bays;
 }
@@ -537,12 +578,25 @@ async function loadPhotoTexture(url) {
     const blob = await r.blob();
     let bitmap;
     try {
-      bitmap = await createImageBitmap(blob);
+      // Pre-flip the bitmap at decode time. Three.js's default tex.flipY=true
+      // is silently ignored for ImageBitmap uploads in WebGL2 on most
+      // browsers, which is why photos rendered upside down with the previous
+      // code. Combining imageOrientation:'flipY' here with tex.flipY=false
+      // below gives exactly one net flip and produces an upright photo.
+      bitmap = await createImageBitmap(blob, { imageOrientation: 'flipY' });
     } catch (e) {
-      _diagnosePhotoFailure('decode', url, e.message || String(e));
-      return null;
+      // Older browsers (Safari < 15) may not support the imageOrientation
+      // option — fall back to a plain decode and rely on tex.flipY=true.
+      try {
+        bitmap = await createImageBitmap(blob);
+        bitmap._needsClassicFlip = true;
+      } catch (e2) {
+        _diagnosePhotoFailure('decode', url, e2.message || String(e2));
+        return null;
+      }
     }
     const tex = new THREE.Texture(bitmap);
+    tex.flipY = !!bitmap._needsClassicFlip; // matches the decode path above
     tex.needsUpdate = true;
     tex.colorSpace = THREE.SRGBColorSpace;
     tex.anisotropy = 4;
@@ -1045,27 +1099,40 @@ class HallwayScene {
   }
 
   async _buildLinearScene(onProgress) {
-    onProgress?.({ pct: 0.05, label: 'Sorting species' });
-    // Bay-pack the species into a straight corridor.
+    onProgress?.({ pct: 0.03, label: 'Loading taxonomy' });
     const cap = MAX_RENDERED * 6;
     const subset = this.species.slice(0, cap);
-    const bays = groupSpeciesIntoLinearBays(subset, 6);
+
+    // Resolve every ancestor name BEFORE we sort, so the corridor order is a
+    // proper alphabetical walk of the taxonomic tree (Family › Genus ›
+    // Species) instead of an arbitrary order by iNat numeric IDs. Cached
+    // names are reused across rebuilds, so toggling back to linear after
+    // branching has filled the cache is essentially free.
+    const ids = new Set();
+    for (const s of subset) for (const a of s.ancestors) ids.add(a);
+    const missing = [...ids].filter(id => !this._ancestorMeta[id]);
+    if (missing.length) {
+      const fetched = await fetchTaxaNames(missing, (done, total) => {
+        const p = total ? done / total : 1;
+        onProgress?.({ pct: 0.03 + 0.25 * p, label: `Loading taxonomy (${done}/${total})` });
+      });
+      Object.assign(this._ancestorMeta, fetched);
+    }
+    onProgress?.({ pct: 0.30, label: 'Grouping species by genus' });
+
+    // Group by direct parent (genus for most species), ordered by ancestor
+    // names — walking the corridor now goes family by family, genus by
+    // genus. Each bay holds at most one genus; a genus with more than 6
+    // species spills into consecutive bays.
+    const bays = groupSpeciesIntoLinearBays(subset, 6, this._ancestorMeta);
     this.linearBays = bays;
     this.tree = null;
     this.rooms = [];
 
-    // Background fetch ancestor names for the HUD label per bay; not awaited.
-    const ancIds = [...new Set(bays.map(b => b.sharedAncestorId).filter(Boolean))];
-    const missingAnc = ancIds.filter(id => !this._ancestorMeta[id]);
-    if (missingAnc.length) {
-      fetchTaxaNames(missingAnc).then(map => Object.assign(this._ancestorMeta, map))
-        .catch(() => {});
-    }
-
-    onProgress?.({ pct: 0.15, label: `Building bays (0/${bays.length})` });
+    onProgress?.({ pct: 0.34, label: `Building bays (0/${bays.length})` });
     await this._buildLinearCorridor(bays, (done, total) => {
       const p = total ? done / total : 1;
-      onProgress?.({ pct: 0.15 + 0.80 * p, label: `Building bays (${done}/${total})` });
+      onProgress?.({ pct: 0.34 + 0.62 * p, label: `Building bays (${done}/${total})` });
     });
   }
 
@@ -1119,6 +1186,9 @@ class HallwayScene {
     this.tree = null;
     this._currentRoom = null;
     this._billboards = [];
+    // Drain the previous build's photo queue so its workers exit their
+    // while-loops before touching disposed materials from the old scene.
+    this._photoQueue = new Set();
     this._photosTotal = 0;
     this._photosLoaded = 0;
     this._updatePhotoProgress();
@@ -1236,7 +1306,10 @@ class HallwayScene {
         endZ: bayEndZ,
         sharedAncestorId: bay.sharedAncestorId,
         color: cssColorForRank(repRank),
-        index: bayIdx
+        index: bayIdx,
+        speciesCount: bay.species.length,
+        partIndex: bay.partIndex ?? 0,
+        partTotal: bay.partTotal ?? 1
       });
 
       // Waypoint at this bay's center so double-tap can hop bay-to-bay
@@ -1277,14 +1350,20 @@ class HallwayScene {
     const bay = bays[bayIdx] || bays[0];
     const color = bay.color || '#22c55e';
     const anc = this._ancestorMeta?.[bay.sharedAncestorId];
-    const label = anc
-      ? `${anc.rank ? capitalize(anc.rank) + ' ' : ''}${anc.name}`
-      : `Bay ${bayIdx + 1} of ${bays.length}`;
+    const rankPrefix = anc?.rank ? capitalize(anc.rank) + ' ' : '';
+    const baseLabel = anc ? `${rankPrefix}${anc.name}` : `Bay ${bayIdx + 1} of ${bays.length}`;
+    const label = bay.partTotal > 1 ? `${baseLabel} · part ${bay.partIndex + 1} of ${bay.partTotal}` : baseLabel;
     title.textContent = label;
     title.style.borderLeft = `4px solid ${color}`;
     title.style.paddingLeft = '10px';
-    const cardsBefore = bayIdx * 6;
-    const bayCount = (this.linearBays[bayIdx]?.species?.length) || 0;
+
+    // Real species range: sum the actual lengths of preceding bays (genera
+    // can leave empty slots when their species count isn't a multiple of 6).
+    let cardsBefore = 0;
+    for (let i = 0; i < bayIdx; i++) {
+      cardsBefore += bays[i].speciesCount || 0;
+    }
+    const bayCount = bay.speciesCount || 0;
     sub.textContent =
       `Species ${cardsBefore + 1}–${cardsBefore + bayCount} of ${this.species.length} · ` +
       `${this.ctx.username} @ ${this.ctx.taxonName}`;
@@ -1866,51 +1945,61 @@ class HallwayScene {
   }
 
   async _loadUserPhotos() {
-    // Visit cards in order of distance from the camera so the user sees the
-    // photos in front of them first. The camera starts inside the lobby for
-    // branching mode and at the corridor entry for linear mode, so the
-    // closest 10–20 cards get priority and stream in within ~1–2 seconds.
+    // Dynamic priority queue: every time a worker is ready for a new card it
+    // re-picks the *currently* closest unloaded card to the camera. So if
+    // the user walks halfway down a 200-card hallway while photos are still
+    // streaming, the loader pivots to the area they just walked into
+    // instead of grinding through the original entry-facing order.
     const username = this.ctx.username;
     const getFirstObs = window.getFirstObs;
-    const camPos = this.camera.position.clone();
     const cards = [...this.cards];
-    cards.sort((a, b) => {
-      const ap = new THREE.Vector3();
-      const bp = new THREE.Vector3();
-      a.group.getWorldPosition(ap);
-      b.group.getWorldPosition(bp);
-      return ap.distanceToSquared(camPos) - bp.distanceToSquared(camPos);
-    });
 
-    const queue = cards;
-    this._photosTotal = queue.length;
+    // Card positions are fixed (cards live in the room group at origin), so
+    // cache once to avoid recomputing each iteration.
+    for (const c of cards) c._worldPos = c.group.position;
+
+    this._photoQueue = new Set(cards);
+    this._photosTotal = cards.length;
     this._photosLoaded = 0;
     this._photosSuccess = 0;
     this._photosNoUrl = 0;
     this._photosError = 0;
     this._updatePhotoProgress();
 
-    let idx = 0;
-    const concurrency = 6;
+    const concurrency = 8;
+
+    const pickNearest = () => {
+      const cp = this.camera.position;
+      let nearest = null, nearestD = Infinity;
+      for (const c of this._photoQueue) {
+        const dx = c._worldPos.x - cp.x;
+        const dz = c._worldPos.z - cp.z;
+        const d = dx * dx + dz * dz;
+        if (d < nearestD) { nearestD = d; nearest = c; }
+      }
+      if (nearest) this._photoQueue.delete(nearest);
+      return nearest;
+    };
 
     const work = async () => {
-      while (idx < queue.length) {
-        const myIdx = idx++;
-        const card = queue[myIdx];
+      while (this._photoQueue.size > 0) {
+        const card = pickNearest();
+        if (!card) break;
 
         // Try the user's first-observation photo, falling back to the
-        // species' default photo from species_counts.
+        // species' default photo from species_counts. We prefer "small"
+        // (~240px) over "medium" (~500px) so loading 200+ cards doesn't
+        // chew through ~200MB of GPU texture memory and stutter the frame.
         let url = null;
         if (getFirstObs) {
           try {
             const info = await getFirstObs(username, card.species.id);
-            url = info?.image_urls?.medium
-               || info?.image_urls?.small
+            url = info?.image_urls?.small
+               || info?.image_urls?.medium
                || info?.image_urls?.thumb
                || null;
             card._firstObs = info;
           } catch (e) {
-            // first-observation API itself errored — log first one only
             if (this._photosError === 0) {
               console.warn('[hallway] first-observation API error:', e.message || e);
             }
